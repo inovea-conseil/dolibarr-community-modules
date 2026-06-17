@@ -180,6 +180,13 @@ if (!getDolGlobalString('EINVOICING_DISABLE_SYNC_DOLI_TO_AP')) {
 	$item->cssClass = 'minwidth500';
 	$item->fieldParams['forcereload'] = 0;
 
+	// Setup conf to use the invoice billing contact (external BILLING contact) as the XML buyer instead of the invoice thirdparty
+	$item = $formSetup->newItem('EINVOICING_USE_BILLING_CONTACT_AS_BUYER')->setAsYesNo();
+	$item->helpText = $langs->transnoentities('EINVOICING_USE_BILLING_CONTACT_AS_BUYER_HELP');
+	$item->defaultFieldValue = 0;
+	$item->cssClass = 'minwidth500';
+	$item->fieldParams['trClass'] = 'advancedoption';
+
 	$item = $formSetup->newItem('EINVOICING_PROTOCOL')->setAsSelect($TFieldProtocols);
 	$item->helpText = $langs->transnoentities('EINVOICING_PROTOCOL_HELP');
 	$item->defaultFieldValue = 'FACTURX';
