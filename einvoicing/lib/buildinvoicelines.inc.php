@@ -129,7 +129,7 @@ $buyerContactName  = null;
 $buyerContactEmail = null;
 $buyerContactPhone = null;
 
-if (getDolGlobalInt('EINVOICING_USE_BILLING_CONTACT_AS_BUYER') && $object->thirdparty->country_code == 'FR') {
+if (getDolGlobalInt('EINVOICING_USE_BILLING_CONTACT_AS_BUYER') ) {
 	$billingContactIds = $object->getIdContact('external', 'BILLING');
 	if (!empty($billingContactIds) && $object->fetch_contact($billingContactIds[0]) > 0 && is_object($object->contact)) {
 		$billingContact = $object->contact;
@@ -146,7 +146,7 @@ if (getDolGlobalInt('EINVOICING_USE_BILLING_CONTACT_AS_BUYER') && $object->third
 		if (!empty($contactSocId) && $contactSocId != $object->socid) {
 			require_once DOL_DOCUMENT_ROOT . '/societe/class/societe.class.php';
 			$recipientSoc = new Societe($db);
-			if ($recipientSoc->fetch($contactSocId) > 0 && idprof($recipientSoc) !== '') {
+			if ($recipientSoc->fetch($contactSocId) > 0 && idprof($recipientSoc) !== '' ) {
 				// Compute intra VAT if missing, same as for the invoice thirdparty
 				if ($recipientSoc->tva_assuj && empty($recipientSoc->tva_intra)) {
 					$recipientSoc->tva_intra = $einvoicing->thirdpartyCalcVATIntra($recipientSoc);
@@ -160,24 +160,6 @@ if (getDolGlobalInt('EINVOICING_USE_BILLING_CONTACT_AS_BUYER') && $object->third
 				dol_syslog('einvoicing: buyer overridden by billing contact thirdparty id=' . $contactSocId . ' (distinct legal entity)', LOG_NOTICE);
 			} else {
 				dol_syslog('einvoicing: billing contact thirdparty id=' . $contactSocId . ' has no usable professional id, keeping invoice thirdparty as buyer', LOG_NOTICE);
-				$contactSocId = 0;	// fall back to case A handling
-			}
-		}
-
-		// Case A: same legal entity (or no usable distinct thirdparty) -> keep the invoice
-		// thirdparty SIREN/VAT/routing, only override name/address from the contact when present.
-		if (empty($contactSocId) || $contactSocId == $object->socid) {
-			if (!empty($billingContact->address)) {
-				$buyerAddress = $billingContact->address;
-			}
-			if (!empty($billingContact->zip)) {
-				$buyerZip = $billingContact->zip;
-			}
-			if (!empty($billingContact->town)) {
-				$buyerTown = $billingContact->town;
-			}
-			if (!empty($billingContact->country_code)) {
-				$buyerCountryCode = $billingContact->country_code;
 			}
 		}
 	} else {
