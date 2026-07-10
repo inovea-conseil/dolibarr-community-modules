@@ -167,6 +167,26 @@ if (!getDolGlobalString('EINVOICING_DISABLE_SYNC_DOLI_TO_AP')) {
 	$itemtitle->setAsTitle();
 	$itemtitle->nameText = '<b>'.$langs->trans("EINVOICING_SYNC_TO_PA").'</b>';
 
+	// Setup conf to enable third-party validation via government APIs (SIREN via data.gouv.fr and VAT via VIES)
+	$item = $formSetup->newItem('EINVOICING_ENABLE_API_VALIDATION')->setAsYesNo();
+	$item->helpText = $langs->transnoentities('EINVOICING_ENABLE_API_VALIDATION_HELP');
+	$item->defaultFieldValue = 0;
+	$item->cssClass = 'minwidth500';
+
+	// Setup conf to choose to block generation/send of an invoice if no routing ID is found for the third party otherwise use SIREN
+	$item = $formSetup->newItem('EINVOICING_BLOCK_INVOICE_NO_ROUTING_ID')->setAsYesNo();
+	$item->helpText = $langs->transnoentities('EINVOICING_BLOCK_INVOICE_NO_ROUTING_ID_HELP');
+	$item->defaultFieldValue = 0;
+	$item->cssClass = 'minwidth500';
+	$item->fieldParams['forcereload'] = 0;
+
+	// Setup conf to use the invoice billing contact (external BILLING contact) as the XML buyer instead of the invoice thirdparty
+	$item = $formSetup->newItem('EINVOICING_USE_BILLING_CONTACT_AS_BUYER')->setAsYesNo();
+	$item->helpText = $langs->transnoentities('EINVOICING_USE_BILLING_CONTACT_AS_BUYER_HELP');
+	$item->defaultFieldValue = 0;
+	$item->cssClass = 'minwidth500';
+	$item->fieldParams['trClass'] = 'advancedoption';
+
 	$item = $formSetup->newItem('EINVOICING_PROTOCOL')->setAsSelect($TFieldProtocols);
 	$item->helpText = $langs->transnoentities('EINVOICING_PROTOCOL_HELP');
 	$item->defaultFieldValue = 'FACTURX';

@@ -82,8 +82,22 @@ class ActionsEInvoicing extends CommonHookActions  // @phan-suppress-current-lin
 		$invoiceObject = $parameters['object'];
 
 		// Check if it's an invoice
-		if ($invoiceObject instanceof Facture) {
-			/** @var Facture $invoiceObject */
+		if ($invoiceObject instanceOf Facture) {
+			$invoiceObject->fetch_thirdparty();
+			$thirdpartyCountryCode = $invoiceObject->thirdparty->country_code;
+			$billingContactIds = $invoiceObject->getIdContact('external', 'BILLING');
+			if (!empty($billingContactIds) && $invoiceObject->fetch_contact($billingContactIds[0]) > 0 && is_object($invoiceObject->contact)) {
+				$billingContact = $invoiceObject->contact;
+				$contactSocId = !empty($billingContact->fk_soc) ? $billingContact->fk_soc : $billingContact->socid;
+
+				if (!empty($contactSocId) && $contactSocId != $object->socid) {
+					require_once DOL_DOCUMENT_ROOT . '/societe/class/societe.class.php';
+					$recipientSoc = new Societe($db);
+					if ($recipientSoc->fetch($contactSocId) > 0 && idprof($recipientSoc) !== '') {
+						$thirdpartyCountryCode = $recipientSoc->country_code;
+					}
+				}
+			}
 
 			$needEinvoice = $einvoicing->needEInvoiceManagement($invoiceObject);
 			if ($needEinvoice) {
