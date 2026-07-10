@@ -130,7 +130,7 @@ class Document extends CommonObject
 	 */
 	public $fields = array(
 		"rowid" => array("type" => "integer", "label" => "ID", "enabled" => "1", 'position' => 1, 'notnull' => 1, "visible" => "1", "noteditable" => "1", "index" => "1", "css" => "left", "comment" => "Id"),
-		"provider" => array("type" => "varchar(50)", "label" => "provider", "enabled" => "1", 'position' => 5, 'notnull' => 1, "visible" => "-1", "comment" => "EInvoice Platform provider"),
+		"provider" => array("type" => "varchar(50)", "label" => "AccessPoint", "langfile" => "einvoicing@einvoicing", "enabled" => "1", 'position' => 5, 'notnull' => 1, "visible" => "-1", "comment" => "EInvoice Platform provider"),
 		"flow_id" => array("type" => "varchar(255)", "label" => "flow_id", "enabled" => "1", 'position' => 10, 'notnull' => 0, "visible" => "1", "comment" => "EInvoice flow UUID", "csslist" => "tdoverflowmax100"),
 		"call_id" => array("type" => "varchar(50)", "label" => "TransactionID", "enabled" => "1", 'position' => 20, 'notnull' => 0, "visible" => "1", "comment" => "Reference to the original call", "csslist" => "tdoverflowmax100"),
 		"flow_type" => array("type" => "varchar(255)", "label" => "flow_type", "enabled" => "1", 'position' => 40, 'notnull' => 0, "visible" => "1", "comment" => "Flow type ('sync', 'CustomerInvoice', 'Manual...', etc.)"),
@@ -158,6 +158,7 @@ class Document extends CommonObject
 		"fk_user_creat" => array("type" => "integer:User:user/class/user.class.php", "label" => "UserAuthor", "picto" => "user", "enabled" => "1", 'position' => 510, 'notnull' => 1, "visible" => "-2", "csslist" => "tdoverflowmax150",),
 		"fk_user_modif" => array("type" => "integer:User:user/class/user.class.php", "label" => "UserModif", "picto" => "user", "enabled" => "1", 'position' => 511, 'notnull' => -1, "visible" => "-2", "csslist" => "tdoverflowmax150",),
 		"response_for_debug" => array("type" => "text", "label" => "RetreivedMessage", "enabled" => "1", 'position' => 700, 'notnull' => 0, "visible" => "-1", "comment" => "Full response body (JSON) of flow"),
+		"xml_data" => array("type" => "text", "label" => "XmlData", "enabled" => "1", 'position' => 701, 'notnull' => 0, "visible" => "0", "comment" => "Document XML data (without PDF)"),
 		//"status" => array("type" => "integer", "label" => "Status", "enabled" => "1", 'position' => 2000, 'notnull' => 1, "visible" => "0", "index" => "1", "arrayofkeyval" => array("0" => "Brouillon", "1" => "Valid&eacute;", "9" => "Annul&eacute;"), "validate" => "1",),
 	);
 	public $rowid;
@@ -190,6 +191,10 @@ class Document extends CommonObject
 	public $cdar_reason_desc;
 	public $cdar_reason_detail;
 	// END MODULEBUILDER PROPERTIES
+
+	// Contains raw XML content (/!\ may not be identical to original XML content from AP file because it can be partially cleaned (like attachment files) to preserve XML size stored in database)
+	// It allows to work on XML data (even if AP is down) but will not suit for all usages (be aware of limitations)
+	public $xml_data;
 
 
 	// If this object has a subtable with lines
@@ -433,7 +438,7 @@ class Document extends CommonObject
 	 * @param	string		$filtermode	No longer used
 	 * @return	array<int,self>|int<-1,-1>	 <0 if KO, array of pages if OK
 	 */
-	public function fetchAll($sortorder = '', $sortfield = '', $limit = 1000, $offset = 0, string $filter = '', $filtermode = 'AND')
+	public function fetchAll($sortorder = '', $sortfield = '', $limit = 1000, $offset = 0, string $filter = '', $filtermode = 'AND') // @phan-suppress-current-line PhanPluginMoreSpecificActualReturnType
 	{
 		dol_syslog(__METHOD__, LOG_DEBUG);
 
@@ -449,7 +454,7 @@ class Document extends CommonObject
 			$sql .= " WHERE t.entity IN (".getEntity($this->element).")";
 		} elseif (preg_match('/^\w+@\w+$/', (string) $this->ismultientitymanaged)) {
 			$tmparray = explode('@', (string) $this->ismultientitymanaged);
-			$sql .= " LEFT JOIN ".$this->db->prefix().$tmparray[1]." as pt ON t.".$this->db->sanitize($tmparray[0])." = pt.rowid";
+			$sql .= " LEFT JOIN ".$this->db->prefix().$tmparray[1]." as pt ON t.".$this->db->sanitize($tmparray[0])." = pt.rowid";  // @phan-suppress-current-line SqlInjection
 			$sql .= " WHERE pt.entity IN (".getEntity($this->element).")";
 		} else {
 			$sql .= " WHERE 1 = 1";
@@ -618,14 +623,14 @@ class Document extends CommonObject
 			if (preg_match('/^[\(]?PROV/i', $this->ref)) {
 				// Now we rename also files into index
 				$sql = 'UPDATE '.$this->db->prefix()."ecm_files set filename = CONCAT('".$this->db->escape($this->newref)."', SUBSTR(filename, ".(strlen($this->ref) + 1).")), filepath = 'document/".$this->db->escape($this->newref)."'";
-				$sql .= " WHERE filename LIKE '".$this->db->escape($this->ref)."%' AND filepath = 'document/".$this->db->escape($this->ref)."' and entity = ".$conf->entity;
+				$sql .= " WHERE filename LIKE '".$this->db->escape($this->ref)."%' AND filepath = 'document/".$this->db->escape($this->ref)."' and entity = ".((int) $conf->entity);
 				$resql = $this->db->query($sql);
 				if (!$resql) {
 					$error++;
 					$this->error = $this->db->lasterror();
 				}
 				$sql = 'UPDATE '.$this->db->prefix()."ecm_files set filepath = 'document/".$this->db->escape($this->newref)."'";
-				$sql .= " WHERE filepath = 'document/".$this->db->escape($this->ref)."' and entity = ".$conf->entity;
+				$sql .= " WHERE filepath = 'document/".$this->db->escape($this->ref)."' and entity = ".((int) $conf->entity);
 				$resql = $this->db->query($sql);
 				if (!$resql) {
 					$error++;
@@ -1271,6 +1276,45 @@ class Document extends CommonObject
 		dol_syslog(__METHOD__." end", LOG_INFO);
 
 		return $error ?: 0;
+	}
+
+	/**
+	 * Return true if given XML data can be stored in Database (size < 16Mo)
+	 * @param string $xmlData The XML data to check
+	 * @return bool
+	 */
+	public static function checkXmlDataMaxSize(string &$xmlData): bool
+	{
+		// 16Mo for MEDIUMTEXT
+		return (strlen($xmlData) <= 16777215);
+	}
+
+	/**
+	 * Clean XML data by removing or replacing specific contents like :
+	 * - attachments
+	 *
+	 * @param ?string $xmlData The XML data to clean
+	 * @return string The cleaned XML data
+	 */
+	public static function cleanXmlData(?string $xmlData): string
+	{
+		global $db;
+
+		if (!isset($xmlData) || $xmlData === '') {
+			return $xmlData;
+		}
+
+		$protocolManager = new ProtocolManager($db);
+		$detectedProtocolName = $protocolManager->detectProtocolFromContent($xmlData);
+		if (!isset($detectedProtocolName)) {
+			throw new Exception(__METHOD__ . " : protocol not detected for XML data");
+		}
+		$protocol = $protocolManager->getProtocol($detectedProtocolName);
+		$protocolClassName = get_class($protocol);
+
+		$cleanedXmlData = $protocolClassName::removeAttachmentFromXml($xmlData);
+
+		return $cleanedXmlData;
 	}
 }
 

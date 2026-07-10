@@ -48,6 +48,9 @@ class SuperPDPProvider extends AbstractPDPProvider
 	public $helpToGetCredentials = '';
 
 
+	/** @var string Callback url - url to come back to after remote call */
+	public $callbackurl;
+
 	/**
 	 * Constructor
 	 *
@@ -67,9 +70,13 @@ class SuperPDPProvider extends AbstractPDPProvider
 			'test_auth_url' => 'https://api.superpdp.tech/oauth2/',
 			'prod_api_url'  => 'https://api.superpdp.tech/afnor-flow/v1/',
 			'test_api_url'  => 'https://api.superpdp.tech/afnor-flow/v1/',
+			'ap_api_url' 	=> 'https://api.superpdp.tech/v1.beta/',
+			'prod_afnor_directory_url' => 'https://api.superpdp.tech/afnor-directory/',
+			'test_afnor_directory_url' => 'https://api.superpdp.tech/afnor-directory/',
 			'client_id'     => getDolGlobalString('EINVOICING_SUPERPDP_CLIENT_ID'.(getDolGlobalInt('EINVOICING_LIVE') ? '_PROD' : '')),
 			'client_secret' => getDolGlobalString('EINVOICING_SUPERPDP_CLIENT_SECRET'.(getDolGlobalInt('EINVOICING_LIVE') ? '_PROD' : '')),
 			'dol_prefix'    => getDolGlobalString('EINVOICING_PDP') == 'SUPERPDPViaPartner' ? 'EINVOICING_SUPERPDPVIAPARTNER' : 'EINVOICING_SUPERPDP',
+			'has_validator' => 1,
 			'live' => getDolGlobalInt('EINVOICING_LIVE', 0)
 		);
 
@@ -131,8 +138,31 @@ class SuperPDPProvider extends AbstractPDPProvider
 				*/
 
 				$urltogeneratetoken = getDolGlobalString('EINVOICING_SUPERPDP_VIAPARTNER_OAUTH_URL');
-				$urltogeneratetoken .= '?proxy=superpdp&state=none&response_type=code&redirect_uri=' . urlencode(dol_buildpath('/einvoicing/admin/setup.php', 2));
-
+				// $urltogeneratetoken .= '?proxy=superpdp&state=none&response_type=code&redirect_uri=' . urlencode(dol_buildpath('/einvoicing/admin/setup.php', 2));
+				$query = [
+					'state' => 'none',
+					'response_type' => 'code',
+					'redirect_uri' => dol_buildpath('/einvoicing/admin/setup.php', 2)
+				];
+				// Company prefill (number + scheme are an indissociable pair). Sandbox scheme off-live,
+				// otherwise fr_siren / be_numero_entreprise by country.
+				if (!empty($mysoc->idprof1)) {
+					$companyscheme = '';
+					if (!getDolGlobalInt('EINVOICING_LIVE')) {
+						$companyscheme = 'sandbox';
+					} elseif ($mysoc->country_code == 'FR') {
+						$companyscheme = 'fr_siren';
+					} elseif ($mysoc->country_code == 'BE') {
+						$companyscheme = 'be_numero_entreprise';
+					}
+					if ($companyscheme) {
+						$query += [
+							'superpdp_company_number' => removeAllSpaces($mysoc->idprof1),
+							'superpdp_company_number_scheme' => $companyscheme,
+						];
+					}
+				}
+				$urltogeneratetoken .= '?' . http_build_query($query);
 				$urltoshow = $langs->trans("EINVOICING_LINK_CREATE_ACCOUNTVia", getDolGlobalString("EINVOICING_SUPERPDP_VIAPARTNER"));
 
 				if (empty($tokenData['token'])) {
@@ -207,6 +237,28 @@ class SuperPDPProvider extends AbstractPDPProvider
 		// $item->fieldParams['trClass'] = 'advancedoption';
 
 		if (getDolGlobalString('EINVOICING_PDP') != 'SUPERPDPViaPartner' || getDolGlobalString('EINVOICING_SUPERPDP_VIAPARTNER') == 'proxy') {
+			// OAuth grant type: client_credentials (own account, paste credentials) or
+			// authorization_code (delegated authorization / onboarding of a third party).
+
+			/* If module is on a customer client instance not using proxy (getDolGlobalString('EINVOICING_PDP') == 'SUPERPDP'), he use the grant type client_credentials
+			 * If module is on a customer client instance to use proxy (getDolGlobalString('EINVOICING_PDP') == 'SUPERPDPViaPartner'), he use the grant type authorization_code
+			 * If module is the proxy instance (getDolGlobalString('EINVOICING_SUPERPDP_VIAPARTNER') =='proxy'), we use grant type client_credentials but we may use both so we add the option
+			 */
+
+			/* This option seems useless, see previous comment
+			if (getDolGlobalString('EINVOICING_SUPERPDP_VIAPARTNER') == 'proxy') {
+				$item = $formSetup->newItem($prefix.'GRANT_TYPE')->setAsSelect(array(
+					'client_credentials' => $langs->trans('EINVOICING_SUPERPDP_GRANT_CLIENT_CREDENTIALS'),
+					'authorization_code' => $langs->trans('EINVOICING_SUPERPDP_GRANT_AUTHORIZATION_CODE'),
+				));
+
+				$item->nameText = $langs->trans('EINVOICING_SUPERPDP_GRANT_TYPE');
+				$item->helpText = $langs->transnoentities('EINVOICING_SUPERPDP_GRANT_TYPE_HELP');
+				$item->defaultFieldValue = 'client_credentials';
+				$item->cssClass = 'minwidth500';
+			}
+			*/
+
 			// Username
 			$item = $formSetup->newItem($prefix.'CLIENT_ID'.(getDolGlobalInt('EINVOICING_LIVE') ? '_PROD' : ''));
 			$item->nameText = $langs->trans('EINVOICING_CLIENT_ID');
@@ -224,6 +276,37 @@ class SuperPDPProvider extends AbstractPDPProvider
 			}
 			$item->nameText = $langs->trans('EINVOICING_CLIENT_SECRET');
 			$item->cssClass = 'minwidth500';
+
+			// Authorization Code specific settings
+			// We suggest all these options if we are on the proxy.
+			if (getDolGlobalString('EINVOICING_SUPERPDP_VIAPARTNER') == 'proxy' && preg_match('/ViaPartner/', getDolGlobalString('EINVOICING_PDP'))) {
+				// Redirect URI to register in the SuperPDP interface (must match exactly)
+				$item = $formSetup->newItem($prefix.'REDIRECT_URI_INFO');
+				$item->nameText = $langs->trans('EINVOICING_SUPERPDP_REDIRECT_URI');
+				$item->fieldOverride = '<span class="opacitymedium">'.dol_escape_htmltag($this->callbackurl).'</span>';
+				$item->helpText = $langs->transnoentities('EINVOICING_SUPERPDP_REDIRECT_URI_HELP');
+				$item->cssClass = 'minwidth500';
+
+				// Directory registration UI behaviour during onboarding
+				$item = $formSetup->newItem($prefix.'SEND_AND_RECEIVE')->setAsSelect(array(
+					'any' => 'any', 'send' => 'send', 'receive' => 'receive',
+				));
+				$item->nameText = $langs->trans('EINVOICING_SUPERPDP_SEND_AND_RECEIVE');
+				$item->helpText = $langs->transnoentities('EINVOICING_SUPERPDP_SEND_AND_RECEIVE_HELP');
+				$item->defaultFieldValue = 'any';
+				$item->cssClass = 'minwidth500';
+
+				$item = $formSetup->newItem($prefix.'ONLY_FUTURE')->setAsYesNo();
+				$item->nameText = $langs->trans('EINVOICING_SUPERPDP_ONLY_FUTURE');
+				$item->helpText = $langs->transnoentities('EINVOICING_SUPERPDP_ONLY_FUTURE_HELP');
+				$item->defaultFieldValue = '0';
+				$item->cssClass = 'minwidth500';
+
+				$item = $formSetup->newItem($prefix.'DIRECTORY_ENTRY_IDENTIFIER');
+				$item->nameText = $langs->trans('EINVOICING_SUPERPDP_DIRECTORY_ENTRY_IDENTIFIER');
+				$item->helpText = $langs->transnoentities('EINVOICING_SUPERPDP_DIRECTORY_ENTRY_IDENTIFIER_HELP');
+				$item->cssClass = 'minwidth500';
+			}
 		}
 
 		// API_KEY
@@ -238,10 +321,40 @@ class SuperPDPProvider extends AbstractPDPProvider
 				if (getDolGlobalString('EINVOICING_PDP') == 'SUPERPDPViaPartner' && getDolGlobalString("EINVOICING_SUPERPDP_VIAPARTNER")) {
 					$texttoshow = $langs->trans('ConnectTo').' ('.$langs->trans('generateAccessToken') . ' via ' . getDolGlobalString("EINVOICING_SUPERPDP_VIAPARTNER").')';
 					$urltogeneratetoken = getDolGlobalString('EINVOICING_SUPERPDP_VIAPARTNER_OAUTH_URL');
-					$urltogeneratetoken .= '?state=none&response_type=code&redirect_uri=' . urlencode(dol_buildpath('/einvoicing/admin/setup.php', 2));
+					// $urltogeneratetoken .= '?state=none&response_type=code&redirect_uri=' . urlencode(dol_buildpath('/einvoicing/admin/setup.php', 2));
+					$query = [
+						'state' => 'none',
+						'response_type' => 'code',
+						'redirect_uri' => dol_buildpath('/einvoicing/admin/setup.php', 2)
+					];
+					// Company prefill (number + scheme are an indissociable pair). Sandbox scheme off-live,
+					// otherwise fr_siren / be_numero_entreprise by country.
+					if (!empty($mysoc->idprof1)) {
+						$companyscheme = '';
+						if (!getDolGlobalInt('EINVOICING_LIVE')) {
+							$companyscheme = 'sandbox';
+						} elseif ($mysoc->country_code == 'FR') {
+							$companyscheme = 'fr_siren';
+						} elseif ($mysoc->country_code == 'BE') {
+							$companyscheme = 'be_numero_entreprise';
+						}
+						if ($companyscheme) {
+							$query += [
+								'superpdp_company_number' => removeAllSpaces($mysoc->idprof1),
+								'superpdp_company_number_scheme' => $companyscheme,
+							];
+						}
+					}
+					$urltogeneratetoken .= '?' . http_build_query($query);
 				} elseif (getDolGlobalString($prefix . 'CLIENT_ID'.(getDolGlobalInt('EINVOICING_LIVE') ? '_PROD' : '')) && getDolGlobalString($prefix . 'CLIENT_SECRET'.(getDolGlobalInt('EINVOICING_LIVE') ? '_PROD' : ''))) {
-					$texttoshow = $langs->trans('ConnectTo').' ('.$langs->trans('generateAccessToken').')';
-					$urltogeneratetoken = $_SERVER["PHP_SELF"] . "?action=set" . $prefix . "TOKEN&token=" . newToken();
+					if (getDolGlobalString($prefix . 'GRANT_TYPE') == 'authorization_code') {
+						// OAuth 2.1 Authorization Code: redirect the user to SuperPDP's authorize endpoint.
+						$texttoshow = $langs->trans('ConnectTo').' ('.$langs->trans('EINVOICING_SUPERPDP_GRANT_AUTHORIZATION_CODE').')';
+						$urltogeneratetoken = $this->getAuthorizationCodeUrl();
+					} else {
+						$texttoshow = $langs->trans('ConnectTo').' ('.$langs->trans('generateAccessToken').')';
+						$urltogeneratetoken = $_SERVER["PHP_SELF"] . "?action=set" . $prefix . "TOKEN&token=" . newToken();
+					}
 				}
 
 				if ($urltogeneratetoken && (getDolGlobalString('EINVOICING_PDP') != 'SUPERPDPViaPartner' || !empty($tokenData['token']))) {
@@ -292,13 +405,14 @@ class SuperPDPProvider extends AbstractPDPProvider
 
 					// Check your ID in E-Invoice Annuary
 					$showannuary = 0;
+					$idtocheck = '';
 					if ($mysoc->country_code == 'FR') {
 						$showannuary++;
 
 						$item->fieldOverride .= '<i class="fa fa-list-alt pictofixedwidth centerimp"></i>'.$langs->trans('CheckYourIDInEInvoiceAnnuary');
 
 						$einvoicing = new EInvoicing($this->db);
-						$idtocheck = $einvoicing->getSellerCommunicationURI(0);
+						$idtocheck = (string) $einvoicing->getSellerCommunicationURI(0);
 
 						if (getDolGlobalString('EINVOICING_LIVE')) {
 							$item->fieldOverride .= ': <a class="reposition" href="https://facturation.chorus-pro.gouv.fr/annuaire/#/" target="_blank">' . $langs->trans('FrenchGovAnnuary') . '</a>';
@@ -338,7 +452,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 				$langs->loadLangs(array("main", "oauth"));
 				$error[] = $langs->trans('ErrorFieldRequired', $langs->transnoentities('EINVOICING_CLIENT_SECRET'));
 			}
-		} elseif ($mode == 1) {
+		} elseif ($mode == 1) {  // @phan-suppress-current-line PhanPluginEmptyStatementIf
 			// Not used
 		}
 
@@ -395,10 +509,178 @@ class SuperPDPProvider extends AbstractPDPProvider
 	 */
 	public function refreshAccessToken()
 	{
-		// Get access token from OAUth server and save it into database.
-		$result = $this->getAccessToken();
+		// OAuth 2.1: when a refresh_token is available (Authorization Code grant), renew the access token
+		// with grant_type=refresh_token instead of re-authenticating from scratch. A full re-auth opens a
+		// new session on the PA each time, whereas refreshing does not. The refresh token is rotated on each
+		// use, so we must persist the new one returned by the server.
+		if (!empty($this->tokenData['refresh_token'])) { // Refresh token is available only for Authorization Code grant, not for Client Credentials grant.
+			$providerconfig = $this->getConf();
 
-		return $result;
+			// "Via partner" (grey-label) client: it holds no client_secret, so it cannot run the
+			// refresh_token grant against the PA directly. Route the refresh through the operator's
+			// proxy, which holds the secret and performs the grant on our behalf, then returns the
+			// rotated tokens. Mirrors the delegated enrolment flow (proxy_oauthcallback.php).
+			$proxyurl = getDolGlobalString('EINVOICING_SUPERPDP_VIAPARTNER_OAUTH_URL');
+			if (getDolGlobalString('EINVOICING_PDP') == 'SUPERPDPViaPartner'
+				&& getDolGlobalString('EINVOICING_SUPERPDP_VIAPARTNER') != 'proxy'
+				&& !empty($proxyurl)) {
+				require_once DOL_DOCUMENT_ROOT.'/core/lib/geturl.lib.php';
+
+				$param = array(
+					'action'        => 'refresh',
+					'grant_type'    => 'refresh_token',
+					'refresh_token' => $this->tokenData['refresh_token'],
+				);
+				$resultget = getURLContent($proxyurl, 'POST', http_build_query($param), 1, array('Content-Type: application/x-www-form-urlencoded'));
+
+				$httpcode = empty($resultget['http_code']) ? 0 : $resultget['http_code'];
+				if (empty($resultget['curl_error_no']) && $httpcode == 200) {
+					$body = json_decode($resultget['content'], true);
+					if (is_array($body) && !empty($body['access_token']) && isset($body['expires_in'])) {
+						$this->saveOAuthTokenDB($body['access_token'], $body['refresh_token'] ?? $this->tokenData['refresh_token'], $body['expires_in']);
+						$this->tokenData = $this->fetchOAuthTokenDB();
+						return $body['access_token'];
+					}
+				}
+				// Proxy refresh failed: a via-partner client has no secret to fall back on, so we stop here.
+				dol_syslog(__METHOD__." refresh via partner proxy failed http_code=".$httpcode, LOG_WARNING, 0, "_einvoicing");
+				$this->errors[] = 'FailedToRefreshAccessTokenViaProxy';
+				return null;
+			}
+
+			$param = array(
+				'grant_type'    => 'refresh_token',
+				'refresh_token' => $this->tokenData['refresh_token'],
+				'client_id'     => $providerconfig['client_id'],
+				'client_secret' => $providerconfig['client_secret'],
+			);
+			$paramstring = http_build_query($param);
+			$extraHeaders = array('Content-Type' => 'application/x-www-form-urlencoded');
+
+			$response = $this->callApi("token", "POST", $paramstring, $extraHeaders, 'refresh_access_token');
+			$status_code = $response['status_code'] ?? 0;
+			$body = $response['response'] ?? null;
+
+			if ($status_code == 200 && is_array($body) && isset($body['access_token']) && isset($body['expires_in'])) {
+				// Persist the rotated refresh_token (keep the previous one if the server did not rotate it).
+				$this->saveOAuthTokenDB($body['access_token'], $body['refresh_token'] ?? $this->tokenData['refresh_token'], $body['expires_in']);
+				$this->tokenData = $this->fetchOAuthTokenDB();
+				return $body['access_token'];
+			}
+			// Refresh failed (refresh token expired or already rotated away): fall through to a full re-auth.
+		}
+
+		// No refresh token (e.g. Client Credentials grant, which issues none) or refresh failed: re-authenticate.
+		return $this->getAccessToken();
+	}
+
+	/**
+	 * Build the OAuth 2.1 Authorization Code authorize URL (delegated authorization / onboarding).
+	 *
+	 * Generates and stores an anti-CSRF state in the session, then returns the SuperPDP authorize URL with
+	 * the client_id, redirect_uri and optional prefill parameters (company number, login hint, directory
+	 * options). No PKCE: SuperPDP's reference example uses a random state and a confidential client.
+	 *
+	 * @return string 	Authorize URL to redirect the user to (empty string if client_id is missing)
+	 */
+	public function getAuthorizationCodeUrl()
+	{
+		global $user, $mysoc;
+
+		$providerconfig = $this->getConf();
+		if (empty($providerconfig['client_id'])) {
+			return '';
+		}
+
+		$authbase = $providerconfig['live'] ? $providerconfig['prod_auth_url'] : $providerconfig['test_auth_url'];
+
+		// Anti-CSRF state, stored in session and verified on the callback.
+		$state = bin2hex(random_bytes(16));
+		$_SESSION['einvoicing_superpdp_oauth_state'] = $state;
+
+		// SuperPDP: scopes must be left empty — the parameter is OMITTED, not sent as scope='' (which the
+		// authorize endpoint rejects with invalid_request, like the reference golang.org/x/oauth2 example).
+		$query = array(
+			'response_type' => 'code',
+			'client_id'     => $providerconfig['client_id'],
+			'redirect_uri'  => $this->callbackurl,
+			'state'         => $state,
+		);
+
+		if (!empty($user->email)) {
+			$query['login_hint'] = $user->email;
+		}
+
+		// Company prefill (number + scheme are an indissociable pair). Sandbox scheme when not in live mode.
+		$companyscheme = '';
+		if (!empty($mysoc->idprof1)) {
+			if (empty($providerconfig['live'])) {
+				$companyscheme = 'sandbox';
+			} elseif ($mysoc->country_code == 'FR') {
+				$companyscheme = 'fr_siren';
+			} elseif ($mysoc->country_code == 'BE') {
+				$companyscheme = 'be_numero_entreprise';
+			}
+			if ($companyscheme) {
+				$query['superpdp_company_number'] = removeAllSpaces($mysoc->idprof1);
+				$query['superpdp_company_number_scheme'] = $companyscheme;
+			}
+		}
+
+		// Optional directory options. directory_entry_identifier and only_future are fr_siren-specific
+		// (per SuperPDP docs) — do not send them for the sandbox/be schemes.
+		if (getDolGlobalString('EINVOICING_SUPERPDP_SEND_AND_RECEIVE')) {
+			$query['superpdp_send_and_receive'] = getDolGlobalString('EINVOICING_SUPERPDP_SEND_AND_RECEIVE');
+		}
+		if ($companyscheme === 'fr_siren') {
+			if (getDolGlobalString('EINVOICING_SUPERPDP_DIRECTORY_ENTRY_IDENTIFIER')) {
+				// TODO The EINVOICING_SUPERPDP_DIRECTORY_ENTRY_IDENTIFIER should be a prefix only
+				// and superpdp_directory_entry_identifier should be removeAllSpaces($mysoc->idprof1).'_'.getDolGlobalString('EINVOICING_SUPERPDP_DIRECTORY_ENTRY_IDENTIFIER');
+				// or it should be a param on the end client side, not on proxy ?
+				$query['superpdp_directory_entry_identifier'] = getDolGlobalString('EINVOICING_SUPERPDP_DIRECTORY_ENTRY_IDENTIFIER');
+			}
+			if (getDolGlobalInt('EINVOICING_SUPERPDP_ONLY_FUTURE')) {
+				$query['superpdp_only_future'] = 'true';
+			}
+		}
+
+		return $authbase . 'authorize?' . http_build_query($query);
+	}
+
+	/**
+	 * Exchange an OAuth 2.1 authorization code for an access token + refresh token, and store them.
+	 *
+	 * @param 	string 			$code 	Authorization code received on the redirect callback
+	 * @return 	string|null 			Access token on success, null on failure (errors filled)
+	 */
+	public function exchangeAuthorizationCode($code)
+	{
+		global $langs;
+
+		$providerconfig = $this->getConf();
+
+		$param = array(
+			'grant_type'    => 'authorization_code',
+			'code'          => $code,
+			'redirect_uri'  => $this->callbackurl,
+			'client_id'     => $providerconfig['client_id'],
+			'client_secret' => $providerconfig['client_secret'],
+		);
+		$paramstring = http_build_query($param);
+		$extraHeaders = array('Content-Type' => 'application/x-www-form-urlencoded');
+
+		$response = $this->callApi("token", "POST", $paramstring, $extraHeaders, 'authorization_code');
+		$status_code = $response['status_code'] ?? 0;
+		$body = $response['response'] ?? null;
+
+		if ($status_code == 200 && is_array($body) && isset($body['access_token']) && isset($body['expires_in'])) {
+			$this->saveOAuthTokenDB($body['access_token'], $body['refresh_token'] ?? '', $body['expires_in']);
+			$this->tokenData = $this->fetchOAuthTokenDB();
+			return $body['access_token'];
+		}
+
+		$this->errors[] = $langs->trans("FailedToRetrieveAccessToken");
+		return null;
 	}
 
 	/**
@@ -422,6 +704,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 		global $langs;
 
 		$response = $this->callApi("healthcheck", "GET", false, [], 'healthcheck');		// This include the refresh of token
+		$returnarray = array();
 
 		if ($response['status_code'] === 200) {
 			$returnarray['status_code'] = true;
@@ -436,6 +719,67 @@ class SuperPDPProvider extends AbstractPDPProvider
 		return $returnarray;
 	}
 
+	/**
+	 * Validate an electronic invoice file using the superPDP validation service.
+	 *
+	 * @param 	int 	$idinvoice 	ID of the invoice to validate
+	 * @param 	string 	$filePath 	Path to the invoice file to validate
+	 *
+	 * @return 	array|string 		Validation result or error message.
+	 */
+	public function validateEInvoiceFile($idinvoice, $filePath)
+	{
+		global $langs;
+
+		if (empty($this->config['has_validator']) || $this->config['has_validator'] != 1) {
+			return array('res' => -1, 'message' => $langs->trans('NoAvailableValidatorforThisAccessPoint'));
+		}
+
+		if (empty($filePath) || !is_string($filePath)) {
+			return array('res' => -1, 'message' => 'Invalid file path provided for validation');
+		}
+
+		if (!file_exists($filePath)) {
+			return array('res' => -1, 'message' => "E-invoice file not found: " . $filePath);
+		}
+
+		$mimeType = mime_content_type($filePath) ?: 'application/octet-stream';
+
+		$params = [
+			'file' => new CURLFile($filePath, $mimeType, basename($filePath)),
+		];
+
+		// Extra headers
+		$extraHeaders = [
+			'Content-Type' => 'multipart/form-data'
+		];
+
+		$response = $this->callApi("validation_reports", "POSTALREADYFORMATED", $params, $extraHeaders, 'precheck_invoice');
+
+		if (empty($response) || !isset($response['response']['data']['0'])) {
+			return array('res' => -1, 'message' => 'Invalid response from validation service');
+		}
+
+		$report = $response['response']['data']['0'] ?? null;
+		$isValid = !empty($report['is_valid']);
+
+		$report_details = [];
+		if (!empty($report['error'])) {
+			$report_details['error'] = $report['error'];
+		}
+		if (!empty($report['subreports'])) {
+			$report_details['subreports'] = $report['subreports'];
+		}
+
+		// Save the validation report and status
+		$einvoicing = new EInvoicing($this->db);
+		$einvoicing->insertOrUpdateExtLink($idinvoice, 'facture', '', 0, '', '', null, ($isValid ? 'passed' : 'failed'), json_encode($report_details));
+
+		return array(
+			'res'     => $isValid ? 1 : -1,
+			'message' => ''
+		);
+	}
 
 	/**
 	 * Send an electronic invoice.
@@ -443,7 +787,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 	 * This function send an invoice to PDP
 	 *
 	 * @param	Facture		$object 	Invoice object
-	 * @return 	string   				flowId if the invoice was successfully sent, false otherwise.
+	 * @return 	string|array{res:int<-1,1>,message:string}|0|false			flowId if the invoice was successfully sent, false otherwise.
 	 */
 	public function sendInvoice($object)
 	{
@@ -511,7 +855,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 		$response = $this->callApi("flows", "POSTALREADYFORMATED", $params, $extraHeaders, 'send_invoice');
 
 		if ($response['status_code'] == 200 || $response['status_code'] == 202) {
-			$flowId = $response['response']['flowId'];
+			$flowId = $response['response']['flowId'] ?? '';
 			$callId = $response['id'];
 			$callRef = $response['call_id'];
 
@@ -529,7 +873,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 
 			// Update einvoice status with awaiting validation
 			$einvoicing = new EInvoicing($this->db);
-			$einvoicing->insertOrUpdateExtLink($object->id, Facture::class, $flowId, EInvoicing::STATUS_AWAITING_VALIDATION, $object->ref);
+			$einvoicing->insertOrUpdateExtLink($object->id, $object->element, $flowId, EInvoicing::STATUS_AWAITING_VALIDATION, $object->ref);
 
 			// Call the API to retrieve flow details and check the validation status.
 			// A short delay is applied to allow the PDP time to process the document.
@@ -567,7 +911,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 			}
 			$syncRef = $flowData['trackingId'] ?? '';
 			$syncComment = $flowData['acknowledgement']['details'][0]['reasonMessage'] ?? '';
-			$einvoicing->insertOrUpdateExtLink($object->id, Facture::class, $flowId, $syncStatus, $syncRef, $syncComment);
+			$einvoicing->insertOrUpdateExtLink($object->id, $object->element, $flowId, $syncStatus, $syncRef, $syncComment);
 
 			// Log an event in the invoice timeline
 			$eventLabel = "EINVOICING - Status: " . $ack_statusLabel;
@@ -601,14 +945,15 @@ class SuperPDPProvider extends AbstractPDPProvider
 	 * Send a sample electronic invoice for testing purposes.
 	 * This function generates a sample invoice and sends it to PDP
 	 *
-	 * @param 	int 			$onlymake		1=to only make the sample
-	 * @return 	array|string 					True if the invoice was successfully sent, false otherwise.
+	 * @param 	int<0,1>		$onlymake		1=to only make the sample
+	 * @return 	string[]|0	 					True if the invoice was successfully sent, false otherwise.
 	 */
 	public function sendSampleInvoice($onlymake = 0)
 	{
 		global $langs;
 
 		$outputLog = array(); // Feedback to display
+		$invoice_path = null;
 
 		// Generate sample invoice
 		$einvoicing = new EInvoicing($this->db);
@@ -623,7 +968,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 				$this->errors[] = $this->exchangeProtocol->error;
 				return 0;
 			}
-			$invoice_path = $resarray['path'];
+			$invoice_path = (string) $resarray['path'];
 			$ref = $resarray['ref'];
 		} catch (Exception $e) {
 			$this->errors[] = $e->getMessage();
@@ -635,8 +980,10 @@ class SuperPDPProvider extends AbstractPDPProvider
 			return 0;
 		}
 
+
 		// invoice_path is something like "/.../documents/einvoicing/temp/..." or "/.../documents/facture/temp/..."
 
+		$invoice_path = (string) $invoice_path;  // Phan workaround
 		if ($invoice_path) {
 			$outputLog[] = "Sample invoice generated successfully.";
 		}
@@ -737,12 +1084,12 @@ class SuperPDPProvider extends AbstractPDPProvider
 	 * Call the provider API.
 	 *
 	 * @param string 						$resource 	    Resource relative URL ('token', 'healthcheck', 'Flows', or others)
-	 * @param string                        $method         HTTP method ('GET', 'POST', etc.)
-	 * @param array<string, mixed>|false 	$params 	    Options for the request
+	 * @param 'POST'|'GET'|'HEAD'|'PUT'|'PUTALREADYFORMATED'|'POSTALREADYFORMATED'|'DELETE' $method         HTTP method (dolibarr's types)
+	 * @param string|false 	$params 	    Options for the request (JSON encoded)
 	 * @param array<string, string>         $extraHeaders   Optional additional headers
 	 * @param string|null                   $callType       Functional type of the API call for logging purposes (e.g., 'sync_flows', 'send_invoice')
 	 *
-	 * @return array{status_code:int,response:null|string|array<string,mixed>,?errorCode:string,?errorMessage:string,?id:int,?call_id:string}
+	 * @return array{status_code:int,response:null|string|array<string,mixed>,errorCode?:string,errorMessage?:string,id?:int,call_id?:string}
 	 */
 	public function callApi($resource, $method, $params = false, $extraHeaders = [], $callType = '')
 	{
@@ -755,8 +1102,20 @@ class SuperPDPProvider extends AbstractPDPProvider
 
 		require_once DOL_DOCUMENT_ROOT . '/core/lib/geturl.lib.php';
 
-		$url = $this->getApiUrl(($callType == 'get_access_token') ? 'auth' : 'api') . $resource;
+		// The OAuth token endpoint lives on the auth base (/oauth2/), not the Flow API base. This applies to
+		// every token grant: client_credentials, authorization_code and refresh_token.
+		$url = $this->getApiUrl(($resource == 'token' || $callType == 'get_access_token') ? 'auth' : 'api') . $resource;
+		if ($resource == 'validation_reports' || strpos($resource, 'french_directory') === 0) {
+			// validation_reports and the French directory lookup both live on the AP API base (v1.beta).
+			$url = $this->getApiUrl('ap_api') . $resource;
+		}
+		if (strpos($resource, 'afnor-directory/') === 0) {
+			// Standardized AFNOR Directory Service (XP Z12-013) lives on its own base. The 'afnor-directory/'
+			// prefix is only a routing marker and is stripped before appending the real resource path.
+			$url = $this->getApiUrl('afnor_directory') . substr($resource, strlen('afnor-directory/'));
+		}
 
+		$httpheader = array();
 		if (!isset($extraHeaders['Content-Type'])) {
 			$httpheader[] = 'Content-Type: application/json';
 			$httpheader[] = 'Accept: application/json';
@@ -819,30 +1178,92 @@ class SuperPDPProvider extends AbstractPDPProvider
 			}
 		}
 
-		// Log the API call if we have the functional type
-		if (!empty($callType)) { // TODO : Add a parameter in module configuration to enable/disable logging
-			$call = new Call($this->db);
-			$call->call_id = $call->getNextCallId();
-			$call->call_type = $callType ?: '';
-			$call->method = ($method == 'POSTALREADYFORMATED' ? 'POST' : $method);
-			$call->endpoint = '/' . $resource;
-			$call->request_body = is_array($params) ? json_encode($params) : $params;
-			$call->response = is_array($returnarray['response']) ? json_encode($returnarray['response']) : $returnarray['response'];
-			$call->provider = $this->name;
-			$call->entity = $conf->entity;
-			$call->status = ($returnarray['status_code'] == 200 || $returnarray['status_code'] == 202) ? 1 : 0;
-
-			$result = $call->create($user);
-
-			if ($result > 0) {
-				$returnarray['id'] = $call->id;
-				$returnarray['call_id'] = $call->call_id;
-			} else {
-				dol_syslog(__METHOD__ . " Failed to log API call to PDP provider: " . $call->error . " - " . implode(',', $call->errors), LOG_ERR);
-			}
+		// Log the API call through an independent connection so the trace survives a
+		// rollback of the caller's transaction on error (see logCall(), issue #291).
+		$logged = $this->logCall($callType, $resource, $method, $params, $returnarray['response'], $returnarray['status_code']);
+		if ($logged !== null) {
+			$returnarray['id'] = $logged['id'];
+			$returnarray['call_id'] = $logged['call_id'];
 		}
 
 		return $returnarray;
+	}
+
+	/**
+	 * Check whether a recipient (SIREN) is routable, preferring the standardized AFNOR Directory
+	 * Service (XP Z12-013) handled by the parent, and falling back to the SuperPDP specific
+	 * french_directory endpoint only when the standardized lookup is not available.
+	 *
+	 * @param 	string 	$idprof1 	Recipient SIREN (idprof1)
+	 * @return 	array{status:string,reachable:int,entries:int,active:int,identifier:string,message:string,httpcode:int}
+	 */
+	public function checkRecipientDirectory($idprof1)
+	{
+		// Standardized AFNOR directory check first (works for any conformant Approved Platform).
+		$result = parent::checkRecipientDirectory($idprof1);
+		if (in_array($result['status'], array('routable', 'inactive', 'absent'), true)) {
+			return $result;
+		}
+
+		// Standardized lookup unavailable or errored: fall back to the SuperPDP specific endpoint.
+		return $this->checkRecipientDirectoryLegacy($idprof1);
+	}
+
+	/**
+	 * Legacy fallback: check the recipient reception address through the SuperPDP specific directory
+	 * endpoint (GET french_directory/entries on the v1.beta base). Kept for platforms or environments
+	 * where the standardized AFNOR Directory Service is not reachable.
+	 *
+	 * @param 	string 	$idprof1 	Recipient SIREN (idprof1)
+	 * @return 	array{status:string,reachable:int,entries:int,active:int,identifier:string,message:string,httpcode:int}
+	 */
+	private function checkRecipientDirectoryLegacy($idprof1)
+	{
+		$result = array('status' => 'error', 'reachable' => -1, 'entries' => 0, 'active' => 0, 'identifier' => '', 'message' => '', 'httpcode' => 0);
+
+		$siren = preg_replace('/[^0-9]/', '', (string) $idprof1);
+		if ($siren === '') {
+			$result['message'] = 'EInvoicingDirectoryNoSiren';
+			return $result;
+		}
+
+		$resource = 'french_directory/entries?number=' . urlencode($siren);
+		$response = $this->callApi($resource, 'GET', false, array(), 'precheck_directory');
+		$result['httpcode'] = (int) (isset($response['status_code']) ? $response['status_code'] : 0);
+
+		if ($result['httpcode'] != 200) {
+			$result['message'] = isset($response['errorMessage']) ? $response['errorMessage'] : ('HTTP ' . $result['httpcode']);
+			return $result;
+		}
+
+		$data = array();
+		if (isset($response['response']['data']) && is_array($response['response']['data'])) {
+			$data = $response['response']['data'];
+		}
+		$result['entries'] = count($data);
+		foreach ($data as $entry) {
+			if (!empty($entry['is_active'])) {
+				$result['active']++;
+				if ($result['identifier'] === '' && !empty($entry['identifier'])) {
+					$result['identifier'] = $entry['identifier'];
+				}
+			}
+		}
+
+		if ($result['entries'] == 0) {
+			// Recipient not present in the directory at all.
+			$result['status'] = 'absent';
+			$result['reachable'] = 0;
+		} elseif ($result['active'] == 0) {
+			// Present but no active routing line (reason NON_TRANSMISE): still cannot receive.
+			$result['status'] = 'inactive';
+			$result['reachable'] = 0;
+		} else {
+			$result['status'] = 'routable';
+			$result['reachable'] = 1;
+		}
+
+		return $result;
 	}
 
 	/**
@@ -850,7 +1271,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 	 *
 	 * @param   int   $syncFromDate     Timestamp from which to start synchronization. If 0, begins from epoch (1970-01-01).
 	 * @param   int   $limit            Maximum number of flows to synchronize. 0 means no limit.
-	 * @return 	bool|array{res:int, messages:array<string>, details:array<string>, actions:array<string>} 	True on success, false on failure along with messages, details for debugging, and suggested optional actions.
+	 * @return 	bool|array{res:int, messages:string[], totalFlows?:?int, alreadyExist?:int, syncedFlows?:int, batchlimit?:int, actions?:array<string,array{actionurl:string,actioncode:string,action:string,businessmessage:string}>, details?:string[]} 	True on success, false on failure along with messages, details for debugging, and suggested optional actions.
 	 */
 	public function syncFlows($syncFromDate = 0, $limit = 0)
 	{
@@ -858,8 +1279,12 @@ class SuperPDPProvider extends AbstractPDPProvider
 		global $form;
 
 		if (!is_object($form)) {
+			require_once DOL_DOCUMENT_ROOT . '/core/class/html.form.class.php';
 			$form = new Form($db);
 		}
+
+		// Start the run with a clean "last unprocessed invoice" diagnostic; failed flows re-create it.
+		$this->clearIncomingDiagnosticFiles();
 
 		$results_messages = array();	// result message (technical error)
 		$actions = array();				// business message (manual action to do)
@@ -952,20 +1377,20 @@ class SuperPDPProvider extends AbstractPDPProvider
 
 		// Since AP may not return flows in the order they want (by updatedAt ASC), we sort them here
 		dol_syslog(__METHOD__ . " Sort the flows per updatedAt", LOG_DEBUG, 0, "_einvoicing");
-		usort($response['response']['results'], function ($a, $b) {
+		usort($response['response']['results'], static function ($a, $b) {
 			return strtotime($a['updatedAt']) <=> strtotime($b['updatedAt']);
 		});
 
 		// Clean already processed flows from the list
 		$alreadyProcessedFlowIds = [];
-		$flowIds = array_column($response['response']['results'], 'flowId');
-		$escapedFlowIds = array();
+		$flowIds = array_column($response['response']['results'] ?? [], 'flowId');
+		$sanitizedFlowIds = array();
 		foreach ($flowIds as $flowId) {
-			$escapedFlowIds[] = "'" . $db->escape($flowId) . "'";
+			$sanitizedFlowIds[] = "'" . $db->escape($flowId) . "'";
 		}
-		if (count($escapedFlowIds)) {
+		if (count($sanitizedFlowIds)) {
 			$sql = "SELECT flow_id FROM " . MAIN_DB_PREFIX . "einvoicing_document";
-			$sql .= " WHERE flow_id IN (" . implode(',', $escapedFlowIds) . ")";
+			$sql .= " WHERE flow_id IN (" . implode(',', $sanitizedFlowIds) . ")";
 			$resql = $db->query($sql);
 			if ($resql) {
 				while ($obj = $db->fetch_object($resql)) {
@@ -993,7 +1418,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 
 		// Loop on each flow received in list
 		$i = 0;
-		foreach ($response['response']['results'] as $flow) {
+		foreach ($response['response']['results'] ?? [] as $flow) {
 			$i++;
 			if (in_array($flow['flowId'], $alreadyProcessedFlowIds)) {
 				dol_syslog(__METHOD__ . " #" . $i . " Flow " . $flow['flowId'] . " already processed, discard it.", LOG_DEBUG, 0, "_einvoicing");
@@ -1023,9 +1448,9 @@ class SuperPDPProvider extends AbstractPDPProvider
 
 						if ($rescode == 'THIRDPARTY_NOT_FOUND') {
 							$infostring = '';
-							foreach ($res['actiondata'] as $datakey => $dataval) {
+							foreach ($res['actiondata'] ?? [] as $datakey => $dataval) {
 								if ($datakey && $dataval) {
-									$infostring .= ($infostring ? ', ': '').$datakey.': '.$dataval;
+									$infostring .= ($infostring ? ', ' : '').$datakey.': '.$dataval;
 								}
 							}
 							$actions[$rescode]['businessmessage'] = $langs->trans("CantFindThirdpartyFromTheImportedInvoice", $infostring);
@@ -1034,9 +1459,9 @@ class SuperPDPProvider extends AbstractPDPProvider
 						}
 						if ($rescode == 'PRODUCT_NOT_FOUND') {
 							$infostring = '';
-							foreach ($res['actiondata'] as $datakey => $dataval) {
+							foreach ($res['actiondata'] ?? [] as $datakey => $dataval) {
 								if ($datakey && $dataval) {
-									$infostring .= ($infostring ? ', ': '').$datakey.': '.$dataval;
+									$infostring .= ($infostring ? ', ' : '').$datakey.': '.$dataval;
 								}
 							}
 							$actions[$rescode]['businessmessage'] = $langs->trans("CantFindProductFromTheImportedInvoice", $infostring);
@@ -1080,7 +1505,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 
 		$globalres = ($error > 0 ? -1 : 1);
 
-		$globalresultmessage = ($globalres == 1) ? $langs->trans("SyncCompletedSuccessfuly") . ($batchlimit > 0 ? ' <span class="opacitylow">(' . $langs->trans("maxNumberToProcess") . ': ' . $batchlimit . ")</span>" : "")  : ($langs->trans("SyncAborted", $i, $limit, ($flow['flowId'] ?? 'N/A')));
+		$globalresultmessage = ($globalres == 1) ? $langs->trans("SyncCompletedSuccessfuly") . ($batchlimit > 0 ? ' <span class="opacitylow">(' . $langs->trans("maxNumberToProcess") . ': ' . $batchlimit . ")</span>" : "") : ($langs->trans("SyncAborted", $i, $limit, ($flow['flowId'] ?? 'N/A')));
 
 		dol_syslog(__METHOD__ . " syncFlows end : " . $globalresultmessage, LOG_DEBUG, 0, "_einvoicing");
 
@@ -1102,7 +1527,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 		$processingResult .= "<br>----------------------<br>" . implode("<br>", $messages);
 		$processingResult = "Processing result:<br>" . $processingResult;
 
-		// Save sync recap
+		// Save sync recap (only when this sync is attached to a Call row; otherwise $sql would be undefined/stale)
 		if ($call_id) {
 			$sql = "UPDATE " . MAIN_DB_PREFIX . "einvoicing_call";
 			$sql .= " SET totalflow = " . (is_null($totalFlows) ? "null" : ((int) $totalFlows)) . ",
@@ -1112,9 +1537,8 @@ class SuperPDPProvider extends AbstractPDPProvider
                 processing_result = '" . $db->escape($processingResult) . "',
                     fk_user_modif = " . ((int) $user->id) . "
             WHERE call_id = '" . $db->escape($call_id) . "'";
+			$db->query($sql);
 		}
-
-		$db->query($sql);
 
 		// Return result
 		// 'actions' contains the action to do (in case of business error)
@@ -1137,7 +1561,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 	 *
 	 * @param string 		$flowId        	FlowId
 	 * @param string|null 	$call_id  		Call ID for logging purposes
-	 * @return array{res:int, message:string, actioncode:string|null, actionurl:string|null, action:string|null} Returns array with 'res' (1 on success, 0 if exists or already processed, -1 on failure) with a 'message' and for business errors an optional 'actioncode', 'actionurl' and 'action'.
+	 * @return array{res:int<-1,1>, message:string, actioncode?:string|null, actionurl?:string|null, action?:string|null} Returns array with 'res' (1 on success, 0 if exists or already processed, -1 on failure) with a 'message' and for business errors an optional 'actioncode', 'actionurl' and 'action'.
 	 */
 	public function syncFlow($flowId, $call_id = null)
 	{
@@ -1220,8 +1644,8 @@ class SuperPDPProvider extends AbstractPDPProvider
 			case "CustomerInvoice":
 				// 1. link flow to customer invoice
 				require_once DOL_DOCUMENT_ROOT . '/compta/facture/class/facture.class.php';
-				$document->fk_element_type = Facture::class;
 				$factureObj = new Facture($this->db);
+				$document->fk_element_type = $factureObj->element;
 				if (!empty($document->tracking_idref)) {
 					$res = $factureObj->fetch(0, $document->tracking_idref);
 					if ($res < 0) {
@@ -1251,10 +1675,22 @@ class SuperPDPProvider extends AbstractPDPProvider
 				$document->tracking_idref = !empty($factureObj->ref) ? $factureObj->ref : $document->tracking_idref . ' (NOTFOUND)'; // Probably the customer invoice was sent from another system that use the same PDP account
 
 				break;
-			// SupplierInvoice
+				// SupplierInvoice
 			case "SupplierInvoice":
 				// --- Fetch received documents (Einvoice)
-				$document->fk_element_type = FactureFournisseur::class;
+				$document->fk_element_type = 'invoice_supplier';
+
+				// AFNOR XP Z12-013: a supplier invoice to book is an INCOMING flow (issued by the
+				// platform to us). An outgoing/errored "SupplierInvoice" flow is NOT a received
+				// invoice and must not be imported as a facture fournisseur — otherwise lifecycle
+				// actions (e.g. a refusal) fail on the PDP side with "no matching invoices found".
+				if ($document->flow_direction !== 'In') {
+					$document->fk_element_id = 0;
+					$returnRes = 1;		// mark the flow as processed, just do not create an invoice
+					$returnMessage = "Skipped SupplierInvoice flow " . $flowId . " (flowDirection=" . ($document->flow_direction ?: 'null') . ", not an incoming invoice)";
+					dol_syslog(__METHOD__ . " " . $returnMessage, LOG_WARNING, 0, "_einvoicing");
+					break;
+				}
 
 				// Retrieve the PDF file converted by Access Point
 				$receivedFile = null;
@@ -1302,20 +1738,9 @@ class SuperPDPProvider extends AbstractPDPProvider
 				}
 				*/
 
-				// Retreive Original file
+				// Retrieve Original file
 				$receivedFile = null;
-				$flowResource = 'flows/' . $flowId;
-				$flowUrlparams = array(
-					'docType' => 'Original', 						// docType can be 'Metadata' (JSON), 'Original', 'Converted' or 'ReadableView'
-				);
-				$flowResource .= '?' . http_build_query($flowUrlparams);
-				$flowResponse = $this->callApi(
-					$flowResource,
-					"GET",
-					false,
-					['Accept' => 'application/octet-stream'],
-					'get_flow_for_supplier_invoice'
-				);
+				$flowResponse = $this->fetchFlowData($flowId, 'Original', 'get_flow_for_supplier_invoice');
 
 				if ($flowResponse['status_code'] != 200) {
 					return array('res' => -1, 'message' => "ERROR_FLOW_GETORIG Failed to retrieve 'Original' document for SupplierInvoice flow (flowId: " . $flowId . ")" . (empty($flowResponse['errorMessage']) ? '' : ' - ' . $flowResponse['errorMessage']));
@@ -1352,14 +1777,18 @@ class SuperPDPProvider extends AbstractPDPProvider
 						return $retarray;
 					} else {
 						// Complete the document object with the created supplier invoice details
-						$suplierInvoiceObj = new FactureFournisseur($this->db);
-						$resFetch = $suplierInvoiceObj->fetch($res['res']);
-						$document->fk_element_id = !empty($suplierInvoiceObj->id) ? $suplierInvoiceObj->id : 0;
-						$document->tracking_idref = !empty($suplierInvoiceObj->ref) ? $suplierInvoiceObj->ref : 'Error'; // Should always be found here
+						$supplierInvoiceObj = new FactureFournisseur($this->db);
+						$resFetch = $supplierInvoiceObj->fetch($res['res']);
+						$document->fk_element_id = !empty($supplierInvoiceObj->id) ? $supplierInvoiceObj->id : 0;
+						$document->tracking_idref = !empty($supplierInvoiceObj->ref) ? $supplierInvoiceObj->ref : 'Error'; // Should always be found here
+						$cleanedXmlData = Document::cleanXmlData($res['xml_data'] ?? '');
+						if (!empty($cleanedXmlData) && Document::checkXmlDataMaxSize($cleanedXmlData)) {
+							$document->xml_data = $cleanedXmlData;
+						}
 
 						//return array('res' => 0, 'message' => "supplier invoice already exists for flowId: " . $flowId . ". " . $res['message']);
 						$returnRes = 1;		// If invoice did already exists, we process one more line from list of flows, so we must return 1, even if nothing was done.
-						$returnMessage = "Supplier invoice " . $suplierInvoiceObj->ref . " created or already existing for flowId: " . $flowId . ". " . $res['message'];
+						$returnMessage = "Supplier invoice " . $supplierInvoiceObj->ref . " created or already existing for flowId: " . $flowId . ". " . $res['message'];
 
 						$db->commit();
 					}
@@ -1375,15 +1804,15 @@ class SuperPDPProvider extends AbstractPDPProvider
 
 				break;
 
-			// Customer Invoice LC (life cycle)
+				// Customer Invoice LC (life cycle)
 			case "CustomerInvoiceLC":
 				// 1. link flow document to customer invoice
 				require_once DOL_DOCUMENT_ROOT . '/compta/facture/class/facture.class.php';
 
 				// This part seems useless:, if invoice ref not found we continue the same way if found
 				/*
-				$document->fk_element_type = Facture::class;
 				$factureObj = new Facture($this->db);
+				$document->fk_element_type = $factureObj->element;
 
 				$refinvoice = $document->tracking_idref;
 
@@ -1434,8 +1863,8 @@ class SuperPDPProvider extends AbstractPDPProvider
 						return array('res' => -1, 'message' => "FlowId: " . $flowId . " - Failed to parse CDAR document");
 					}
 
-					$document->fk_element_type = Facture::class;	// 'Facture', 'FactureFournisseur'
 					$factureObj = new Facture($this->db);
+					$document->fk_element_type = $factureObj->element;
 
 					// Get Invoice Reference from CDAR
 					$issuerAssignedID = $cdarDocument['AcknowledgementDocument']['ReferenceReferencedDocument']['IssuerAssignedID'];
@@ -1443,7 +1872,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 					$res = $factureObj->fetch(0, $issuerAssignedID);
 					if ($res < 0) {
 						return array(
-							'res' => '-1',
+							'res' => -1,
 							'message' => "FlowId " . $flowId . " - Failed to fetch customer invoice using CDAR IssuerAssignedID/ref: " . $issuerAssignedID
 						);
 					}
@@ -1480,7 +1909,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 								$syncStatus = $einvoicing::STATUS_ERROR;
 								$syncComment = $document->ack_info;
 							}
-							$einvoicing->insertOrUpdateExtLink($factureObj->id, Facture::class, $flowId, $syncStatus, $factureObj->ref, $syncComment);
+							$einvoicing->insertOrUpdateExtLink($factureObj->id, $factureObj->element, $flowId, $syncStatus, $factureObj->ref, $syncComment);
 
 							$einvoicing->storeStatusMessage($document->fk_element_id, $document->fk_element_type, $document->cdar_lifecycle_code, $syncComment, $document->flow_direction, $flowId, $syncValidationStatus, $syncValidationComment, $document->submittedat, $document->cdar_reason_code);
 						} else {
@@ -1555,37 +1984,37 @@ class SuperPDPProvider extends AbstractPDPProvider
 					}
 				} catch (Exception $e) {
 					return array(
-						'res' => '-1',
+						'res' => -1,
 						'message' => "FlowId " . $flowId . " - Error processing CDAR document - " . $e->getMessage()
 					);
 				}
 
 				break;
 
-			// Supplier Invoice LC (life cycle)
+				// Supplier Invoice LC (life cycle)
 			case "SupplierInvoiceLC":
 				// This is a supplier invoice lifecycle message that we sent to PDP.
 				// We link it to the supplier invoice in dolibarr and we check validation response.
 				// Since we trigger an AJAX every X seconds to get validation response while validation of sent LC message remains in the "Pending" status after sending. That will be a double check of validation of sent LC message in case ajax call it not triggered or failed for some reason.
 
 				require_once DOL_DOCUMENT_ROOT . '/fourn/class/fournisseur.facture.class.php';
-				$document->fk_element_type = FactureFournisseur::class;
+				$document->fk_element_type = 'invoice_supplier';
 
 				// Fetch the linked supplier invoice using flowId stored in einvoicing_lifecycle_msg table when the LC message was sent
 				$resFetchStatusMessages = $einvoicing->fetchStatusMessages($flowId);
-				if ($resFetchStatusMessages < 0 || empty($resFetchStatusMessages)) {
+				if (!is_array($resFetchStatusMessages) /* || $resFetchStatusMessages < 0 */ || empty($resFetchStatusMessages)) {
 					$returnRes = 0;
 					$returnMessage = "Failed to fetch status messages for flowId: " . $flowId;
 				} else {
 					// Fetch ref and id to link the document to supplier invoice
-					$suplierInvoiceObj = new FactureFournisseur($this->db);
-					$resFetch = $suplierInvoiceObj->fetch($resFetchStatusMessages['element_id']);
+					$supplierInvoiceObj = new FactureFournisseur($this->db);
+					$resFetch = $supplierInvoiceObj->fetch($resFetchStatusMessages['element_id']);
 					if ($resFetch <= 0) {
 						$returnRes = 0;
 						$returnMessage = "Failed to fetch supplier invoice for flowId: " . $flowId . " using rowid from einvoicing_lifecycle_msg table: " . $resFetchStatusMessages['rowid'];
 					} else {
-						$document->fk_element_id = !empty($suplierInvoiceObj->id) ? $suplierInvoiceObj->id : 0;
-						$document->tracking_idref = !empty($suplierInvoiceObj->ref) ? $suplierInvoiceObj->ref : '(NOTFOUND)'; // Should always be found here
+						$document->fk_element_id = !empty($supplierInvoiceObj->id) ? $supplierInvoiceObj->id : 0;
+						$document->tracking_idref = !empty($supplierInvoiceObj->ref) ? $supplierInvoiceObj->ref : '(NOTFOUND)'; // Should always be found here
 					}
 
 					// Update LC message status in einvoicing_lifecycle_msg table based on validation response
@@ -1622,7 +2051,8 @@ class SuperPDPProvider extends AbstractPDPProvider
 				// - If trackingId is null, we try to retrieve the linked invoice using the flowId
 				//   stored in the einvoicing_extlinks table when the invoice was sent.
 
-				$document->fk_element_type = Facture::class;
+				$obj = null;
+				$document->fk_element_type = 'facture';
 				if (empty($document->tracking_idref)) {
 					// Try to get tracking_idref from einvoicing_extlinks table
 					$sql = "SELECT d.syncref as tracking_idref";
@@ -1642,7 +2072,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 					}
 				}
 
-				if (!empty($document->tracking_idref)) {
+				if (!empty($document->tracking_idref) && is_object($obj)) {
 					require_once DOL_DOCUMENT_ROOT . '/compta/facture/class/facture.class.php';
 					$factureObj = new Facture($this->db);
 					$res = $factureObj->fetch(0, $document->tracking_idref);
@@ -1678,7 +2108,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 							$db->begin();
 
 							try {
-								$einvoicing->insertOrUpdateExtLink($factureObj->id, Facture::class, $flowId, $einvoicing::STATUS_ERROR, $factureObj->ref, $document->ack_info);
+								$einvoicing->insertOrUpdateExtLink($factureObj->id, $factureObj->element, $flowId, $einvoicing::STATUS_ERROR, $factureObj->ref, $document->ack_info);
 
 								// Log an event in the invoice timeline
 								$statusLabel = $document->ack_status;
@@ -1802,7 +2232,7 @@ class SuperPDPProvider extends AbstractPDPProvider
 				 * If no response is available yet, we wait for the next synchronization.
 				 **/
 
-				$flowId = $response['response']['flowId'];
+				$flowId = $response['response']['flowId'] ?? '';
 
 				// Update einvoice status with awaiting validation
 				$einvoicing = new EInvoicing($db);

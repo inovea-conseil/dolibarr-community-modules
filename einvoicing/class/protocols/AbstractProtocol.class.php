@@ -26,6 +26,11 @@
 abstract class AbstractProtocol
 {
 	/**
+	 * @var DoliDB Db
+	 */
+	public $db;
+
+	/**
 	 * Invoice object
 	 * @var Facture
 	 */
@@ -36,6 +41,17 @@ abstract class AbstractProtocol
 
 	/** @var array Error messages */
 	public $errors = [];
+
+	/** @var array Non-blocking warning messages */
+	public $warnings = [];
+
+	/**
+	 * @param DoliDB $db Db
+	 */
+	public function __construct($db)
+	{
+		$this->db = $db;
+	}
 
 	/**
 	 * Generate the XML content for a given invoice.
@@ -91,4 +107,119 @@ abstract class AbstractProtocol
 	 * @return 	-1|array<string,string>							Path or content of the generated sample invoice.
 	 */
 	abstract public function generateSampleInvoice($einvoicing, $thirdpartySeller = null, $thirdpartyBuyer = null, $options = array());
+
+	/**
+	 * Remove attachment nodes to get a smaller XML
+	 * @param string $xmlData The XML data to process
+	 * @return string Cleaned XML
+	 */
+	abstract public static function removeAttachmentFromXml(string $xmlData): string;
+
+	/**
+	 * Check if the generated e-invoice file exceeds the configured size limit.
+	 * Adds a non-blocking warning to $this->warnings[] if the limit is exceeded.
+	 *
+	 * @param	string	$filepath	Path to the generated e-invoice file
+	 * @return	void
+	 */
+	protected function checkFileSizeLimit($filepath)
+	{
+		global $langs;
+
+		$maxMB = (float) getDolGlobalString('EINVOICING_MAX_FILE_SIZE_MB');
+		if ($maxMB <= 0 || !file_exists($filepath)) {
+			return;
+		}
+
+		$sizeMB = filesize($filepath) / (1024 * 1024);
+		if ($sizeMB > $maxMB) {
+			$langs->load('einvoicing@einvoicing');
+			$this->warnings[] = $langs->trans('EInvoiceFileSizeExceedsLimit', number_format($sizeMB, 2), number_format($maxMB, 2));
+			dol_syslog(get_class($this) . '::checkFileSizeLimit ' . basename($filepath) . ' size ' . number_format($sizeMB, 2) . ' MB exceeds configured limit of ' . number_format($maxMB, 2) . ' MB', LOG_WARNING);
+		}
+	}
+
+	/**
+	 * Check the generated CII XML against a subset of the EN 16931 business rules (BR, BR-CO, BR-FR).
+	 *
+	 * Local safety net run at generation time, before the file is stored: it catches arithmetic
+	 * inconsistencies (totals, VAT breakdown, prepaid/due) with an explicit message quoting the
+	 * official rule id, without a network call and for any PDP provider. The official Schematron
+	 * applied by the Approved Platform remains the reference.
+	 *
+	 * Controlled by EINVOICING_BR_CHECK, a three-value option: "nocheck" skips the check,
+	 * "warning_only" (default) reports violations as non-blocking warnings, and "blocking" aborts
+	 * the generation (the exception is caught by generateInvoice() which returns -1 with the messages).
+	 *
+	 * @param	string	$xmlcontent		Generated CII XML content
+	 * @return	void
+	 * @throws	Exception				When violations are found and mode is "blocking"
+	 */
+	protected function checkBusinessRules($xmlcontent)
+	{
+		global $langs;
+
+		$brMode = getDolGlobalString('EINVOICING_BR_CHECK', 'warning_only');
+		if ($brMode === 'nocheck') {
+			return;
+		}
+
+		dol_include_once('einvoicing/class/utils/En16931Validator.class.php');
+		$validator = new En16931Validator();
+		$violations = $validator->validate($xmlcontent);
+		if (empty($violations)) {
+			return;
+		}
+
+		dol_syslog(get_class($this) . '::checkBusinessRules ' . count($violations) . ' violation(s): ' . implode(' | ', $violations), LOG_WARNING, 0, '_einvoicing');
+
+		if ($brMode === 'blocking') {
+			$this->errors = array_merge((array) $this->errors, $violations);
+			$langs->load('einvoicing@einvoicing');
+			throw new Exception($langs->trans('EInvoiceBusinessRulesViolations', (string) count($violations)) . ' - ' . implode(' | ', $violations));
+		}
+
+		$this->warnings = array_merge((array) $this->warnings, $violations);
+	}
+
+	/**
+	 * Clean up the per-call working temp files of an inbound invoice, while preserving the
+	 * "last invoice that could not be processed" diagnostic shown (and downloadable) in the
+	 * document list view.
+	 *
+	 * Each inbound sync writes the received document to its own unique working file, so two
+	 * concurrent syncs can no longer overwrite each other and parse the wrong invoice (#226).
+	 * On failure, the working file is promoted to the fixed diagnostic slot (overwriting the
+	 * previous one) so it stays downloadable; on success, the working files are simply removed.
+	 *
+	 * @param	string	$tempDir			Module temp directory
+	 * @param	string	$workFile			Unique working file for the received document
+	 * @param	string	$workReadable		Unique working file for the readable view (may not exist)
+	 * @param	string	$diagName			Fixed diagnostic filename for the received document
+	 * @param	string	$diagReadableName	Fixed diagnostic filename for the readable view
+	 * @param	bool	$failed				True if processing failed (keep the diagnostic), false otherwise
+	 * @return	void
+	 */
+	protected function cleanupIncomingTempFiles($tempDir, $workFile, $workReadable, $diagName, $diagReadableName, $failed)
+	{
+		if ($failed) {
+			// Keep the failed file(s) as the downloadable "last unprocessed invoice" diagnostic.
+			if (file_exists($workFile)) {
+				dol_delete_file($tempDir . '/' . $diagName);
+				dol_copy($workFile, $tempDir . '/' . $diagName, '0', 1);
+			}
+			if (file_exists($workReadable)) {
+				dol_delete_file($tempDir . '/' . $diagReadableName);
+				dol_copy($workReadable, $tempDir . '/' . $diagReadableName, '0', 1);
+			}
+		}
+
+		// Always drop the per-call working files.
+		if (file_exists($workFile)) {
+			dol_delete_file($workFile);
+		}
+		if (file_exists($workReadable)) {
+			dol_delete_file($workReadable);
+		}
+	}
 }

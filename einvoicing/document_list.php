@@ -98,7 +98,7 @@ $groupby = GETPOST('groupby', 'aZ09');	// Example: $groupby = 'p.fk_opp_status' 
 
 $id = GETPOSTINT('id');
 $ref = GETPOST('ref', 'alpha');
-$sync_result = '';
+$sync_result = array();
 $maxflows = GETPOSTINT('maxflows');
 $syncFromDate = GETPOSTINT('syncfromdate');
 
@@ -133,6 +133,7 @@ $object = new Document($db);
 $extrafields = new ExtraFields($db);
 $diroutputmassaction = $conf->einvoicing->dir_output.'/temp/massgeneration/'.$user->id;
 $hookmanager->initHooks(array($contextpage)); 	// Note that conf->hooks_modules contains array of activated contexes
+$provider = null;
 
 // Fetch optionals attributes and labels
 $extrafields->fetch_name_optionals_label($object->table_element);
@@ -328,12 +329,10 @@ if ($action == 'confirm_sync' && getDolGlobalString('EINVOICING_PDP') && $confir
 			}
 			//setEventMessages($langs->trans("FailedToSyncADocument").($errortype ? '<br>'.$langs->trans("FailedToSyncADocumentMore") : ''), null, $errortype);
 		} else {
-			// If sync is successful, we delete the old cached files that could not be processed
-			dol_delete_file($filePathCII);
-			dol_delete_file($filePathFacturX);
-
+			// The "last invoice that could not be processed" diagnostic files are managed by the sync
+			// itself (cleared at the start of syncFlows(), re-created per failed flow), not here.
 			if (!empty($sync_result['syncedFlows']) && $sync_result['syncedFlows'] > 0) {
-				// If sync was successful and we processed 1 new record, we clear the submited date so a new one will be suggested from the last record in db.
+				// If sync was successful and we processed 1 new record, we clear the submitted date so a new one will be suggested from the last record in db.
 				$syncfromdate = 0;
 			}
 		}
@@ -360,7 +359,7 @@ $morecss = array();
 // Build and execute select
 // --------------------------------------------------------------------
 $sql = "SELECT";
-$sql .= " ".$object->getFieldList('t', array('recap'));
+$sql .= " ".$object->getFieldList('t', array('recap', 'xml_data'));
 // Add fields from extrafields
 if (!empty($extrafields->attributes[$object->table_element]['label'])) {
 	foreach ($extrafields->attributes[$object->table_element]['label'] as $key => $val) {
@@ -389,7 +388,7 @@ if (!empty($object->ismultientitymanaged) && (int) $object->ismultientitymanaged
 	$sql .= " WHERE t.entity IN (".getEntity($object->element, (GETPOSTINT('search_current_entity') ? 0 : 1)).")";
 } elseif (preg_match('/^\w+@\w+$/', (string) $object->ismultientitymanaged)) {
 	$tmparray = explode('@', (string) $object->ismultientitymanaged);
-	$sql .= " LEFT JOIN ".$object->db->prefix().$tmparray[1]." as pt ON t.".$db->sanitize($tmparray[0])." = pt.rowid";
+	$sql .= " LEFT JOIN ".$object->db->prefix().$tmparray[1]." as pt ON t.".$db->sanitize($tmparray[0])." = pt.rowid";  // @phan-suppress-current-line SqlInjection
 	$sql .= " WHERE pt.entity IN (".getEntity($object->element, (GETPOSTINT('search_current_entity') ? 0 : 1)).")";
 } else {
 	$sql .= " WHERE 1 = 1";
@@ -648,12 +647,13 @@ $newcardbutton = '';
 //$newcardbutton .= dolGetButtonTitle($langs->trans('New'), '', 'fa fa-plus-circle', dol_buildpath('/einvoicing/document_card.php', 1).'?action=create&backtopage='.urlencode($_SERVER['PHP_SELF']), '', $permissiontoadd);
 
 
+$providershort = '';
 if ($provider) {
-	$title = $langs->trans("EInvoiceSynchronizationHelp", $provider->providerName);
+	$providershort = preg_replace('/ViaPartner$/', '', $provider->providerName);
+	$title = $langs->trans("EInvoiceSynchronizationHelp", $providershort);
 }
 
 print_barre_liste($title, $page, $_SERVER["PHP_SELF"], $param, $sortfield, $sortorder, $massactionbutton, $num, $nbtotalofrecords, $object->picto, 0, $newcardbutton, '', $limit, 0, 0, 1);
-
 
 
 // Add code for pre mass action (confirmation or email presend form)
@@ -707,7 +707,7 @@ $last_sync_info = '<span class="opacitylowx">'.img_picto('', 'long-arrow-alt-rig
 
 $Lastsyncinfosql = "SELECT flow_id, updatedat";
 $Lastsyncinfosql .= " FROM ".MAIN_DB_PREFIX."einvoicing_document";
-$Lastsyncinfosql .= " WHERE provider = '".$db->escape($provider->providerName)."'";
+$Lastsyncinfosql .= " WHERE provider = '".$db->escape($providershort)."'";
 $Lastsyncinfosql .= " AND entity = ".((int) $conf->entity);		// Do not use getentity here, must always be on 1 entity.
 $Lastsyncinfosql .= $db->order("updatedat", "DESC");
 $Lastsyncinfosql .= $db->plimit(1);
@@ -980,7 +980,7 @@ if ($action == 'confirm_sync' && getDolGlobalString('EINVOICING_PDP') && $confir
 
 		// If error but no suggested action (should not happen) and debug mode is off, show a message to ask to enable debug mode (in case of)
 		if ($sync_result['res'] < 0 && empty($sync_result['actions']) && !getDolGlobalInt('EINVOICING_DEBUG_MODE')) {
-			print '<!-- message to recommand to enable debug mode -->'."\n";
+			print '<!-- message to recommend to enable debug mode -->'."\n";
 			print '<div class="wordbreak warning clearboth">';
 			print '<strong><u>'.$langs->trans("SuggestedActions").' :</u></strong></br>';
 			print $langs->trans("EnableDebugModeToSeeMoreDetails");
@@ -1164,8 +1164,8 @@ while ($i < $imaxinloop) {
 	if ($object->cdar_reason_code) {
 		$object->recap .= 'CDAR Reason Code: '.$object->cdar_reason_code.'<br>';
 	}
-	if ($object->cdar_reason_description) {
-		$object->recap .= 'CDAR Reason Description: '.$object->cdar_reason_description.'<br>';
+	if ($object->cdar_reason_desc) {
+		$object->recap .= 'CDAR Reason Description: '.$object->cdar_reason_desc.'<br>';
 	}
 	if ($object->cdar_reason_detail) {
 		$object->recap .= 'CDAR Reason Detail: '.$object->cdar_reason_detail.'<br>';
@@ -1254,7 +1254,8 @@ while ($i < $imaxinloop) {
 					$isOut = ($object->flow_direction === 'Out');
 					$label = $isOut ? $langs->trans('Output') : $langs->trans('Input');
 					$picto = $isOut ? '1uparrow' : '1downarrow';
-					$class = $isOut ? 'stockmovementexit' : 'stockmovemententry';
+					//$class = $isOut ? 'stockmovementexit' : 'stockmovemententry';
+					$class = $isOut ? 'badge badge-primary' : 'badge badge-secondary';
 
 					print '<span class="' . $class . ' nowrap" title="' . $label . '">';
 					print img_picto($label, $picto, 'class="paddingrightonly"');
@@ -1268,14 +1269,14 @@ while ($i < $imaxinloop) {
 					$out = dol_escape_htmltag($object->tracking_idref);
 
 					if (!empty($object->fk_element_type) && !empty($object->fk_element_id)) {
-						if ($object->fk_element_type === 'Facture') {
+						if ($object->fk_element_type === 'facture') {
 							require_once DOL_DOCUMENT_ROOT.'/compta/facture/class/facture.class.php';
 							$linkedobj = new Facture($db);
 
 							if ($linkedobj->fetch((int) $object->fk_element_id) > 0) {
 								$out = $linkedobj->getNomUrl(1);
 							}
-						} elseif ($object->fk_element_type === 'FactureFournisseur') {
+						} elseif ($object->fk_element_type === 'invoice_supplier') {
 							require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.facture.class.php';
 							$linkedobj = new FactureFournisseur($db);
 
@@ -1290,9 +1291,17 @@ while ($i < $imaxinloop) {
 					}
 
 					print $out;
+				} elseif ($key == 'fk_element_type') {
+					print '<span class="nowraponall">';
+					if ((string) $object->$key == 'Facture') {
+						print img_picto('', 'bill', 'class="pictofixedwidth"').$langs->trans("Invoice");
+					} elseif ((string) $object->$key == 'FactureFournisseur') {
+						print img_picto('', 'supplier_invoice', 'class="pictofixedwidth"').$langs->trans("SupplierInvoice");
+					}
+					print  '</span>';
 				} else {
 					if ($val['type'] == 'html' || $val['type'] == 'text') {
-						print '<div class="small minwidth150 lineheightsmall threelinesmax-normallineheight classfortooltip" title="'.dolPrintHTMLForAttribute((string) $object->$key).'">';
+						print '<div class="small minwidth150 lineheightsmall twolinesmax-normallineheight classfortooltip" title="'.dolPrintHTMLForAttribute((string) $object->$key).'">';
 					}
 					print $object->showOutputField($val, $key, (string) $object->$key, '');
 					if ($val['type'] == 'html' || $val['type'] == 'text') {

@@ -21,6 +21,9 @@
  * \brief   Code to generate the array of invoice and lines
  */
 
+/**
+ * @phan-file-suppress PhanAccessMethodPrivate
+ */
 
 /**
  * @var Conf 		$conf
@@ -33,9 +36,15 @@
  * @var Facture    	$invoice
  * @var CIIProtocol|FacturXProtocol	$this
  */
+'
+@phan-var-force Translate 	$langs
+@phan-var-force Translate 	$outputlangs
+@phan-var-force Facture   	$invoice
+@phan-var-force CIIProtocol|FacturXProtocol	$this
+';
 
 // Use customer language
-if (empty($outputlangs) || ! ($outputlangs instanceof Translate)) {
+if (!isset($outputlangs) || !($outputlangs instanceof Translate)) {
 	$outputlangs = $langs;
 }
 $newlang = '';
@@ -44,7 +53,7 @@ $newlang = '';
 $einvoicing = new EInvoicing($db);
 
 
-$outputlang = $langs->defaultlang;
+$outputlang = (string) $langs->defaultlang;
 
 if (!is_object($invoice->thirdparty)) {
 	$invoice->fetch_thirdparty();
@@ -76,7 +85,9 @@ if (getDolGlobalInt('EINVOICING_USE_CHORUS')) {
 }
 $promise_code = $object->array_options['options_d4d_promise_code'] ?? '';
 if ($promise_code == '') {
-	$promise_code = $object->ref_customer ?? '';
+	// Dolibarr "Réf. client" holds the customer's purchase order number -> BT-13 (see issue #302).
+	// The property is ref_client on recent versions and ref_customer on some older ones; accept both.
+	$promise_code = $object->ref_client ?? ($object->ref_customer ?? '');
 }
 if ($promise_code == '' && !empty($customerOrderReferenceList)) {
 	$promise_code = $customerOrderReferenceList[0];
@@ -85,7 +96,7 @@ if ($promise_code == '' && !empty($customerOrderReferenceList)) {
 // Bank account
 $account = new Account($db);
 if ($object->fk_account > 0) {
-	$account->fetch($object->fk_account);
+	$account->fetch((int) $object->fk_account);
 } elseif (getDolGlobalInt('FACTURE_RIB_NUMBER')) {
 	$account->fetch(getDolGlobalInt('FACTURE_RIB_NUMBER'));
 }
@@ -175,15 +186,15 @@ $schemeGlobalIdProf = $this->getIEC6523Code($buyerParty->country_code, 1);
 $uri               = $einvoicing->getBuyerCommunicationURI($buyerParty, $object);
 $reg = array();
 if (preg_match('/(\d+):(.+)/', $uri, $reg)) {
-	$uri		= $reg[2];
-	$schemeUri  = $reg[1];
+	$uri		= (string) $reg[2];
+	$schemeUri  = (string) $reg[1];
 } else {
 	$schemeUri  = $this->getIEC6523Code($buyerParty->country_code, 2);
 }
 // In case of sample tests, we may have this const defined to overwrite buyer Einvoice address ID.
 // In common case, this should not be used
 if (defined('EINVOICING_FORCE_BUYER_EID')) {
-	$uri               = constant('EINVOICING_FORCE_BUYER_EID');
+	$uri               = (string) constant('EINVOICING_FORCE_BUYER_EID');
 	$schemeUri         = "0225";
 }
 
@@ -196,10 +207,12 @@ if (!empty($usercontacts) && $object->fetch_user($usercontacts[0]) > 0) {
 	$salerepresentative_office_fax    = $object->user->office_fax;
 	$salerepresentative_email         = $object->user->email;
 } else {
-	$salerepresentative_name          = $user->getFullName($outputlangs);
-	$salerepresentative_office_phone  = $user->office_phone;
-	$salerepresentative_office_fax    = $user->office_fax;
-	$salerepresentative_email         = $user->email;
+	// No sales representative assigned to the invoice: the seller contact (BG-6) must describe the
+	// seller, so fall back to the emitting company ($mysoc), not the logged-in user. See issue #252.
+	$salerepresentative_name          = $mysoc->name;
+	$salerepresentative_office_phone  = $mysoc->phone;
+	$salerepresentative_office_fax    = $mysoc->fax;
+	$salerepresentative_email         = $mysoc->email;
 }
 if (empty($salerepresentative_office_phone)) {
 	$salerepresentative_office_phone = $mysoc->phone;
@@ -219,6 +232,7 @@ if (isset($object->thirdparty->default_lang)) {
 }
 // @phan-suppress-next-line PhanUndeclaredProperty
 if (isset($object->default_lang)) {
+	// @phan-suppress-next-line PhanUndeclaredProperty
 	$newlang = $object->default_lang;
 }
 if (GETPOST('lang_id', 'alphanohtml') != "") {
@@ -279,11 +293,14 @@ $depositlines      	= [];
 $globalDiscounts	= [];
 $billing_period    	= [];
 $numligne          	= 1;
-
+// @phan-suppress-current-line PhanTypeArraySuspiciousNullable
 foreach ($object->lines as $line) {
 	$isDepositLine = 0;
 
-	// Skip subtotal lines
+	// Skip title / subtotal / page-break lines. These are product_type 9 pseudo-lines that carry no VAT, so
+	// they must not reach getCategoryRate() (would trigger a VATEX exemption error on rate 0 / no code).
+	// Detection is centralized in _isLineFromExternalModule(), which covers both the legacy modSubtotal
+	// module and the native core subtotal feature.
 	$isSubTotalLine = $this->_isLineFromExternalModule($line, $object->element, 'modSubtotal');
 	if ($isSubTotalLine) {
 		continue;
@@ -333,7 +350,6 @@ foreach ($object->lines as $line) {
 				$depositFactDate = new DateTime(dol_print_date($origFact->date, 'dayrfc'));
 			}
 		}
-		$prepaidAmount += abs($line->total_ttc);
 		$line->qty      = -$line->qty;				// For a deposit, ->qty should be -1.
 		$line->subprice = abs($line->subprice);
 
@@ -407,8 +423,8 @@ foreach ($object->lines as $line) {
 			}
 		}
 		if (isset($line->multilangs)) {
-			$libelle     = $line->multilangs[$newlang]["label"];
-			$description = $line->multilangs[$newlang]["description"];
+			$libelle     = $line->multilangs[$newlang]["label"];  // @phan-suppress-current-line PhanTypeArraySuspiciousNullable
+			$description = $line->multilangs[$newlang]["description"];  // @phan-suppress-current-line PhanTypeArraySuspiciousNullable
 		}
 	}
 	if (empty($libelle)) {
@@ -440,35 +456,39 @@ foreach ($object->lines as $line) {
 	// Set amounts for the line
 
 	$line_unit_price = $line->subprice;
-	$line_unit_price = price2num($line_unit_price, 2);		// Must be rounded to 2 digits. Not used directly, may be used as intermediate data.
+	//$line_unit_price = price2num($line_unit_price, 4);			// Note, 4 digits seems common accuracy for unit price with einvoice, but default dolibarr setup is 'MU' so 5.
 
 	$line_unit_price_ttc = $line->subprice_ttc;
-	$line_unit_price_ttc = price2num($line_unit_price_ttc, 2);	// Must be rounded to 2 digits.
+	//$line_unit_price_ttc = price2num($line_unit_price_ttc, 4);	// Note, 4 digits seems common accuracy for unit price with einvoice, but default dolibarr setup is 'MU' so 5.
 
-	$amountdiscount = 0;
 	$line_unit_price_with_discount = $line_unit_price;
 	if ($line->remise_percent) {
-		$amountdiscount = price2num($line_unit_price * $line->remise_percent / 100, 2);
-		$line_unit_price_with_discount = price2num($line_unit_price - $amountdiscount, 2);
+		$line_unit_price_with_discount = $line_unit_price * (1 - $line->remise_percent / 100);
 	}
+	if ($object->type == $object::TYPE_SITUATION && $line->situation_percent) {
+		$line_unit_price_with_discount = $line_unit_price_with_discount * $line->situation_percent / 100;
+	}
+	$line_unit_price_with_discount = price2num($line_unit_price_with_discount, getDolGlobalString('MAIN_APPLY_DISCOUNT_ON_UNIT_PRICE_THEN_ROUND_BEFORE_MULTIPLICATION_BY_QTY', 'MU'));
 
-	// We need to recalculate the total using the Unit price rounded (netpriceamount) * Quantity, and rounding all temporary calculations to 2.
+	// We need to recalculate the total using the Unit price rounded after discount percent (netpriceamount) and the quantity, and rounding all temporary calculations after to 2
+	// according to EN16931 rules. This is a not accurate rule but it is the rule to follow for e-invoice.
 	// This means we may get a different result than Dolibarr default calculation if:
-	// - MAIN_APPLY_DISCOUNT_ON_UNIT_PRICE_THEN_ROUND_BEFORE_MULTIPLICATION_BY_QTY was not set (if Einvoice is on, it is recommended to set it to 2 or 'MU' with unit price of 2, so accuracy will be reduced to match einvoice rule)
+	// - There is a discount percent AND the option MAIN_APPLY_DISCOUNT_ON_UNIT_PRICE_THEN_ROUND_BEFORE_MULTIPLICATION_BY_QTY was not set or set to a value != MU
 	// or if
-	// - MAIN_APPLY_DISCOUNT_ON_UNIT_PRICE_THEN_ROUND_BEFORE_MULTIPLICATION_BY_QTY is set to a value different than 2, or, if set to 'MU', if the currency accuracy for unit price has a different number of decimals than 2.
-	$line_total_ht = price2num($line_unit_price_with_discount * $line->qty, 2);
-	$line_total_tva = price2num($line_unit_price_with_discount * $line->qty * ($line->tva_tx > 0 ? number_format($line->tva_tx, 2, '.', '') / 100 : 0), 2);
-	$line_total_ttc = price2num($line_total_ht + $line_total_tva, 2);
+	// - There is no discount percent but currency accuracy for total (MAIN_MAX_DECIMALS_UNIT) was not set to 2.
+	// TODO Use calculate_price() with a mode to round to 2 after each temporary calculation.
+	$line_total_ht = price2num((float) $line_unit_price_with_discount * $line->qty, 2);				// Need to round to 2 as defined by EN16931 rules after each calculation.
+	$line_total_tva = price2num((float) $line_unit_price_with_discount * $line->qty * ($line->tva_tx > 0 ? $line->tva_tx / 100 : 0), 2);
+	$line_total_ttc = price2num((float) $line_total_ht + (float) $line_total_tva, 2);
 
-	// Uncomment for test using the most accurate possible calculation (but not following the e-invoice rule to round to 2 digit at each step)
-	/*
-	$line_unit_price = price2num($line->subprice, 'MU');
-	$line_unit_price_with_discount = price2num($line->subprice * (1 - $line->remise_percent / 100), 'MU');
-	$line_total_ht = $line->total_ht;
-	$line_total_tva = $line->total_tva;
-	$line_total_ttc = $line->total_ttc;
-	*/
+	// Uncomment for test using the most accurate possible calculation (but not following the e-invoice rule to round to 2 digit at each step of calculation)
+	if (getDolGlobalInt('EINVOICING_USE_DOLIBARR_ALREADY_CALCULATED_AMOUNTS')) {
+		$line_unit_price = $line->subprice;								// Note, 4 digits seems common accuracy for unit price with einvoice but default dolibarr setup is 5.
+		$line_unit_price_with_discount = price2num($line->subprice * (1 - $line->remise_percent / 100) * ($line->situation_percent ? $line->situation_percent / 100 : 1), 'MU');
+		$line_total_ht = $line->total_ht;
+		$line_total_tva = $line->total_tva;
+		$line_total_ttc = $line->total_ttc;
+	}
 
 	// Add (or update) VAT rate to $taxBreakdown
 	if (!isset($taxBreakdown[$line->tva_tx.($line->vat_src_code ? ' ('.$line->vat_src_code.')' : '')])) {
@@ -565,7 +585,7 @@ foreach ($object->lines as $line) {
 
 
 
-	// If a unit price inluding tax is known (rarely)
+	// If a unit price including tax is known (rarely)
 	if ($line_unit_price_ttc) {
 		// This section seems not required.
 		// It can be used if the price base is including tax (TTC) and without discount (= Catalog public unit price for individual customers)
@@ -624,7 +644,7 @@ $invoiceData = [
 	'documentno'           => $object->ref,												// BT-25
 	'documenttypecode'     => $this->_getTypeOfInvoice($object),						// BT-3 Set the type of invoice (standard, deposit, credit note)
 	'documentdate'         => new DateTime(dol_print_date($object->date, 'dayrfc')),	// BT-26
-	'invoiceCurrency'      => $conf->currency,
+	'invoiceCurrency'      => $object->multicurrency_code,
 	'taxCurrency'          => null,
 	'documentname'         => null,
 	'documentlanguage'     => $outputlang,
@@ -640,9 +660,9 @@ $invoiceData = [
 
 	// Notes
 	'documentNotePublic'   => $object->note_public ?: "",
-	'documentNotePMT'      => getDolGlobalString('EINVOICING_PMT') ?: $outputlangs->trans("NoInvoiceCollectionFees"),
-	'documentNotePMD'      => getDolGlobalString('EINVOICING_PMD') ?: $outputlangs->trans('NoLatePaymentFees'),
-	'documentNoteAAB'      => getDolGlobalString('EINVOICING_AAB') ?: $outputlangs->trans('NoEarlyPaymentDiscount'),
+	'documentNotePMT'      => getDolGlobalString('EINVOICING_PMT') ?: $outputlangs->transnoentities("NoInvoiceCollectionFees"),
+	'documentNotePMD'      => getDolGlobalString('EINVOICING_PMD') ?: $outputlangs->transnoentities('NoLatePaymentFees'),
+	'documentNoteAAB'      => getDolGlobalString('EINVOICING_AAB') ?: $outputlangs->transnoentities('NoEarlyPaymentDiscount'),
 	'documentNotes'        => [],
 
 	// Seller part
@@ -748,7 +768,77 @@ $invoiceData = [
 // Payment mode
 if ($object->mode_reglement_code) {
 	$invoiceData['paymentMeansCode'] = $this->_getPaymentMeanNumber($object);
-	$invoiceData['paymentMeansText'] = $langs->transnoentitiesnoconv("PaymentType" . $object->mode_reglement_code);
+	$invoiceData['paymentMeansText'] = (string) $langs->transnoentitiesnoconv("PaymentType" . $object->mode_reglement_code);
+}
+
+
+// Delivery address (CII ShipToTradeParty / BG-15)
+// Resolve a deliver-to address and expose it so the CII builder can emit a dedicated deliver-to
+// party. Resolution priority:
+//   1) external "SHIPPING" contact attached to the invoice;
+//   2) fallback: delivery address carried by a linked shipment (expedition.fk_delivery_address).
+// buildShipToTradePartyBuilder function only emits the node when the resolved address
+// actually differs from the buyer (bill-to) address and carries a country code; otherwise it falls
+// back to the buyer party. Nothing resolved => keys stay unset => ship-to = buyer is preserved.
+$shipAddress = null;
+if (method_exists($object, 'liste_contact')) {
+	$shipContacts = $object->liste_contact(-1, 'external', 0, 'SHIPPING');
+	if (is_array($shipContacts) && count($shipContacts) > 0) {
+		if (count($shipContacts) > 1) {
+			dol_syslog('einvoicing: invoice ' . $object->id . ' has ' . count($shipContacts) . ' external SHIPPING contacts; using the first (contact id ' . $shipContacts[0]['id'] . ')', LOG_WARNING);
+		}
+		require_once DOL_DOCUMENT_ROOT . '/contact/class/contact.class.php';
+		$shipContact = new Contact($db);
+		if ($shipContact->fetch($shipContacts[0]['id']) > 0) {
+			$shipName = trim($shipContact->getFullName($outputlangs));
+			if ($shipName === '') {
+				$shipName = $object->thirdparty->name;
+			}
+			$shipAddress = array(
+				'name'    => $shipName,
+				'address' => $shipContact->address,
+				'zip'     => $shipContact->zip,
+				'town'    => $shipContact->town,
+				'country' => $shipContact->country_code,
+			);
+		}
+	}
+}
+
+// Fallback: a linked shipment may carry a distinct delivery address (no SHIPPING contact needed).
+if ($shipAddress === null && !empty($object->linkedObjectsIds['shipping']) && is_array($object->linkedObjectsIds['shipping'])) {
+	require_once DOL_DOCUMENT_ROOT . '/expedition/class/expedition.class.php';
+	require_once DOL_DOCUMENT_ROOT . '/contact/class/contact.class.php';
+	foreach ($object->linkedObjectsIds['shipping'] as $expeditionId) {
+		$tmpexpedition = new Expedition($db);
+		if ($tmpexpedition->fetch($expeditionId) > 0 && !empty($tmpexpedition->fk_delivery_address)) {
+			$shipContact = new Contact($db);
+			if ($shipContact->fetch((int) $tmpexpedition->fk_delivery_address) > 0) {
+				$shipName = trim($shipContact->getFullName($outputlangs));
+				if ($shipName === '') {
+					$shipName = $object->thirdparty->name;
+				}
+				$shipAddress = array(
+					'name'    => $shipName,
+					'address' => $shipContact->address,
+					'zip'     => $shipContact->zip,
+					'town'    => $shipContact->town,
+					'country' => $shipContact->country_code,
+				);
+				break;
+			}
+		}
+	}
+}
+
+if ($shipAddress !== null) {
+	$invoiceData['_shipFromContactBill'] = array(
+		'address' => $object->thirdparty->address,
+		'zip'     => $object->thirdparty->zip,
+		'town'    => $object->thirdparty->town,
+		'country' => $object->thirdparty->country_code,
+	);
+	$invoiceData['_shipFromContactShip'] = $shipAddress;
 }
 
 

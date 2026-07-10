@@ -1,6 +1,7 @@
 <?php
 /* Copyright (C) 2025-2026       Laurent Destailleur         <eldy@users.sourceforge.net>
  * Copyright (C) 2025-2026       Mohamed DAOUD               <mdaoud@dolicloud.com>
+ * Copyright (C) 2026		MDW							<mdeweerd@users.noreply.github.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,6 +24,9 @@
  * \brief   Common methods for all AP protocols.
  */
 
+/**
+ * @mixin AbstractProtocol
+ */
 trait CommonProtocol
 {
 	/**
@@ -117,10 +121,10 @@ trait CommonProtocol
 		}
 	}
 
-	/************************************************
+	/**
 	 * Find paymentMean number
 	 *
-	 * @param  object 	$invoice 			object name we look for
+	 * @param  CommonInvoice 	$invoice 			object name we look for
 	 * @return integer                      paymentMeanId for HorstOeko libs
 	 ************************************************/
 	private function _getPaymentMeanNumber($invoice)
@@ -131,35 +135,35 @@ trait CommonProtocol
 			case 'CB':
 				$paymentMeanId = 54;
 				break;
-			//Credit Card
+				//Credit Card
 			case 'CHQ':
 				$paymentMeanId = 20;
 				break;
-			//Check
+				//Check
 			case 'FAC':
 				$paymentMeanId = 1;
 				break;
-			//Local payment method
+				//Local payment method
 			case 'LIQ':
 				$paymentMeanId = 10;
 				break;
-			//Cash
+				//Cash
 			case 'PRE':
 				$paymentMeanId = 59;
 				break;
-			//SEPA direct debit
+				//SEPA direct debit
 			case 'TIP':
 				$paymentMeanId = 45;
 				break;
-			//Bank Transfer with document
+				//Bank Transfer with document
 			case 'TRA':
 				$paymentMeanId = 23;
 				break;
-			//Check
+				//Check
 			case 'VAD':
 				$paymentMeanId = 68;
 				break;
-			//Online Payment
+				//Online Payment
 			case 'VIR':
 				$paymentMeanId = 30;
 				break;
@@ -220,13 +224,7 @@ trait CommonProtocol
 				}
 				break;
 			default:
-				if ($global == 1 || $global == 2) {
-					$retour = "0060";	// DUNS
-					// $retour = "EM";	// Emails
-				} else {
-					$retour = "0060";	// DUNS
-					// $retour = "EM";	// Emails
-				}
+				$retour = "0060";	// DUNS
 		}
 		return $retour;
 	}
@@ -270,7 +268,11 @@ trait CommonProtocol
 		$line->desc = $langs->trans("Description") . " 1";
 		$line->qty = 5;
 		$line->subprice = 100.05;		// unit price (no discount yet)
-		$line->tva_tx = get_default_tva($thirdpartySeller, $thirdpartyBuyer);
+		// get_default_tva() requires Societe objects (strictly typed in core, no null allowed on PHP 8+).
+		// For the specimen, fall back to our own company ($mysoc) when no third party is provided.
+		$sampleSeller = ($thirdpartySeller instanceof Societe) ? $thirdpartySeller : $mysoc;
+		$sampleBuyer = ($thirdpartyBuyer instanceof Societe) ? $thirdpartyBuyer : $mysoc;
+		$line->tva_tx = get_default_tva($sampleSeller, $sampleBuyer);
 		$line->localtax1_tx = 0;
 		$line->localtax2_tx = 0;
 		$line->remise_percent = 10;
@@ -283,9 +285,9 @@ trait CommonProtocol
 
 		$tmp = calcul_price_total($line->qty, $line->subprice, $line->remise_percent, $line->tva_tx, 0, 0, 0, 'HT', 0, 0);
 
-		$line->total_ht = $tmp[0];
-		$line->total_ttc = $tmp[2];
-		$line->total_tva = $tmp[1];
+		$line->total_ht = (float) $tmp[0];
+		$line->total_ttc = (float) $tmp[2];
+		$line->total_tva = (float) $tmp[1];
 		$line->multicurrency_tx = 2;
 		$line->multicurrency_total_ht = 2 * $line->total_ht;
 		$line->multicurrency_total_ttc = 2 * $line->total_ttc;
@@ -418,8 +420,24 @@ trait CommonProtocol
 		$thirdparty = new Societe($db);
 		$einvoicing = new EInvoicing($db);
 		$thirdpartyId = -1;
+		// True when the third party was resolved through a structured identifier (SIREN/SIRET/routing/VAT)
+		// and not through a fuzzy name match (findNearest). Used to raise a non-blocking name-mismatch
+		// warning only when identification did not rely on the (descriptive) name itself. See issue #309.
+		$matchedByStructuredIdentifier = false;
 
 		$sellerCountryCode = $sellerInfo['sellercountry'] ?? '';
+
+		// The legal id (e.g. SIREN) is often carried only in the SpecifiedLegalOrganization
+		// (sellerLegalOrgId/Scheme) and left out of sellerGlobalIds. Merge it in so the lookup,
+		// update and creation steps below all populate the matching idprof field (e.g. idprof1).
+		if (!empty($sellerInfo['sellerLegalOrgId']) && !empty($sellerInfo['sellerLegalOrgScheme'])) {
+			if (empty($sellerInfo['sellerGlobalIds']) || !is_array($sellerInfo['sellerGlobalIds'])) {
+				$sellerInfo['sellerGlobalIds'] = array();
+			}
+			if (empty($sellerInfo['sellerGlobalIds'][$sellerInfo['sellerLegalOrgScheme']])) {
+				$sellerInfo['sellerGlobalIds'][$sellerInfo['sellerLegalOrgScheme']] = $sellerInfo['sellerLegalOrgId'];
+			}
+		}
 
 		// Step 1: Try to find thirdparty by global IDs
 		if (!empty($sellerInfo['sellerGlobalIds']) && is_array($sellerInfo['sellerGlobalIds'])) {
@@ -452,6 +470,7 @@ trait CommonProtocol
 
 						if ($result > 0) {
 							$thirdpartyId = $thirdparty->id;
+							$matchedByStructuredIdentifier = true;
 							dol_syslog(get_class($this) . '::_syncOrCreateThirdpartyFromEInvoiceSeller Found thirdparty by ' . $idScheme . ': ' . $thirdpartyId);
 							break;
 						}
@@ -462,7 +481,7 @@ trait CommonProtocol
 		// Step 2: Try to find using VAT number if not found by global IDs
 		if ($thirdpartyId < 0) {
 			if (!empty($sellerInfo['sellerTaxRegistations']['VA'])) {
-				$sql = "SELECT rowid FROM " . MAIN_DB_PREFIX . "societe WHERE REPLACE(tva_intra, ' ', '') = '" . $db->escape($einvoicing->removeSpaces($sellerInfo['sellerTaxRegistations']['VA'])) . "' AND entity = ".$conf->entity;
+				$sql = "SELECT rowid FROM " . MAIN_DB_PREFIX . "societe WHERE REPLACE(tva_intra, ' ', '') = '" . $db->escape($einvoicing->removeSpaces($sellerInfo['sellerTaxRegistations']['VA'])) . "' AND entity IN (". getEntity('societe').")";
 				$resql = $db->query($sql);
 				if ($resql) {
 					if ($db->num_rows($resql) > 1) {
@@ -481,6 +500,7 @@ trait CommonProtocol
 						$result = $thirdparty->fetch($obj->rowid);
 						if ($result > 0) {
 							$thirdpartyId = $thirdparty->id;
+							$matchedByStructuredIdentifier = true;
 							dol_syslog(get_class($this) . '::_syncOrCreateThirdpartyFromEInvoiceSeller Found thirdparty by VAT number: ' . $thirdpartyId);
 						}
 					}
@@ -523,8 +543,31 @@ trait CommonProtocol
 			}
 
 			if ($result > 0) {
-				$thirdpartyId = $thirdparty->id;
+				// findNearest() RETURNS the rowid (it does not populate $thirdparty->id).
+				$thirdpartyId = $result;
 				dol_syslog(get_class($this) . '::_syncOrCreateThirdpartyFromEInvoiceSeller Found thirdparty by findNearest: ' . $thirdpartyId);
+			}
+		}
+
+		// Identifier-based match: raise a NON-BLOCKING warning when the descriptive name carried by the
+		// e-invoice does not match the linked third party. Under EN 16931 / the French CTC framework, a
+		// supplier is identified and routed by its structured identifier (SIREN 0002, SIRET 0009, routing
+		// 0225) and VAT number, never by name. Seller name (BT-27) and trading name (BT-28) are descriptive
+		// fields, so a mismatch must not block import or routing, but it is a legitimate data-quality /
+		// mis-attachment / fraud signal worth surfacing. See issue #309.
+		$nameMismatchWarning = '';
+		if ($thirdpartyId > 0 && $matchedByStructuredIdentifier) {
+			$invoiceNames = array($sellerInfo['sellername'] ?? '', $sellerInfo['sellerTradingName'] ?? '');
+			$dolibarrNames = array($thirdparty->name, $thirdparty->name_alias);
+			if (!$this->_companyNamesAreConsistent($invoiceNames, $dolibarrNames)) {
+				$invoiceName = trim($sellerInfo['sellername'] ?? '');
+				if ($invoiceName === '') {
+					$invoiceName = trim($sellerInfo['sellerTradingName'] ?? '');
+				}
+				$nameMismatchWarning = $langs->trans('EInvoiceSupplierNameMismatchWarning', $invoiceName, $thirdparty->name);
+				dol_syslog(get_class($this) . '::_syncOrCreateThirdpartyFromEInvoiceSeller ' . $nameMismatchWarning, LOG_WARNING);
+				dol_syslog(get_class($this) . '::_syncOrCreateThirdpartyFromEInvoiceSeller ' . $nameMismatchWarning, LOG_WARNING, 0, '_einvoicing');
+				setEventMessages($nameMismatchWarning, null, 'warnings');
 			}
 		}
 
@@ -539,7 +582,7 @@ trait CommonProtocol
 				dol_syslog(get_class($this) . '::_syncOrCreateThirdpartyFromEInvoiceSeller Complete info disabled, returning existing thirdparty: ' . $thirdpartyId);
 				return array(
 					'res' => $thirdpartyId,
-					'message' => 'Existing thirdparty used without update: ' . $thirdpartyId
+					'message' => 'Existing thirdparty used without update: ' . $thirdpartyId . ($nameMismatchWarning !== '' ? ' - ' . $nameMismatchWarning : '')
 				);
 			}
 
@@ -651,7 +694,7 @@ trait CommonProtocol
 				dol_syslog(get_class($this) . '::_syncOrCreateThirdpartyFromEInvoiceSeller Updated thirdparty: ' . $thirdpartyId);
 				return array(
 					'res' => $thirdpartyId,
-					'message' => 'Thirdparty ' . $thirdparty->name . ' updated successfully.'
+					'message' => 'Thirdparty ' . $thirdparty->name . ' updated successfully.' . ($nameMismatchWarning !== '' ? ' - ' . $nameMismatchWarning : '')
 				);
 			}
 		}
@@ -932,7 +975,7 @@ trait CommonProtocol
 
 		// If no match found after all steps: Create new product
 		if (getDolGlobalInt('EINVOICING_PRODUCTS_AUTO_GENERATION')) {
-			// Auto-create prouct
+			// Auto-create product
 			$product = new Product($db);
 			$product->type 		= $this->_detectProductTypeFromEinvoiceLine($lineData);
 			$product->ref 		= 'EI-' . dol_sanitizeFileName(!empty($lineData['prodsellerid'] && $lineData['prodsellerid'] !== "0000") ? $lineData['prodsellerid'] : uniqid());
@@ -989,6 +1032,12 @@ trait CommonProtocol
 		} else {
 			// Suggest manual creation of product
 			dol_syslog(get_class($this) . '::_findOrCreateProductFromEinvoiceLine Auto-creation of products is disabled', LOG_ERR);
+
+			// Free line mode: import the line without linking any product (res=0 signals the protocol to set desc from XML)
+			if (getDolGlobalInt('EINVOICING_IMPORT_AS_FREE_LINES')) {
+				dol_syslog(get_class($this) . '::_findOrCreateProductFromEinvoiceLine Free line mode: importing without product link', LOG_DEBUG);
+				return array('res' => 0, 'message' => 'Product not found, line imported as free description line (no product link)');
+			}
 
 			$prodRef = trim($lineData['prodbuyerid'] ?? '');
 			$prodSupplierRef = trim($lineData['prodsellerid'] ?? '');
@@ -1068,8 +1117,8 @@ trait CommonProtocol
 				'message' => $message,
 				'actioncode' => 'PRODUCT_NOT_FOUND',
 				'actionurl' => $createUrl,
-				'action' => $action,
-				'actiondata' => $actiondata
+				'action' => $action,				// label of sentence to make action
+				'actiondata' => $actiondata			// array of paramto use for URL to make action
 			);
 		}
 	}
@@ -1087,9 +1136,94 @@ trait CommonProtocol
 		$map = [
 			'0002' => 'idprof1',	// SIREN
 			'0225' => 'idprof1',	// SIREN
+			'0009' => 'idprof2',	// SIRET
 		];
 
 		return $map[$scheme] ?? '';
+	}
+
+
+	/**
+	 * Normalize a company name for tolerant comparison.
+	 *
+	 * Applies the normalization recommended for e-invoicing name checks so that purely descriptive
+	 * differences do not raise false positives: strip accents, lowercase, drop common legal forms
+	 * (SARL, SAS, GmbH, Ltd...) and collapse everything that is not a letter or a digit. The result is a
+	 * comparison key, not a displayable name.
+	 *
+	 * @param 	string 	$name 	Raw company name
+	 * @return 	string 			Normalized comparison key (may be an empty string)
+	 */
+	private function _normalizeCompanyNameForComparison($name)
+	{
+		$name = trim((string) $name);
+		if ($name === '') {
+			return '';
+		}
+
+		// Strip accents then lowercase so "Société" and "SOCIETE" compare equal
+		$name = strtolower(dol_string_unaccent($name));
+
+		// Remove common legal forms (whole words only) to avoid false positives on suffixes
+		$legalForms = array(
+			'sarl', 'sas', 'sasu', 'sa', 'eurl', 'sci', 'snc', 'scop', 'scs', 'sca', 'gie', 'ei',
+			'societe', 'ste', 'ets', 'etablissements', 'cie', 'gmbh', 'ug', 'ag', 'kg', 'ohg',
+			'ltd', 'limited', 'llc', 'inc', 'corp', 'co', 'plc', 'bv', 'nv', 'srl', 'spa', 'sl',
+		);
+		$name = preg_replace('/\b(' . implode('|', $legalForms) . ')\b/', ' ', $name);
+
+		// Keep only alphanumeric characters (drops punctuation, spaces, &, -, etc.)
+		$name = preg_replace('/[^a-z0-9]/', '', (string) $name);
+
+		return (string) $name;
+	}
+
+
+	/**
+	 * Check whether a name carried by an e-invoice is consistent with the linked third party.
+	 *
+	 * Each candidate name is normalized (see _normalizeCompanyNameForComparison) and a match is accepted
+	 * when any invoice name equals or is contained in any Dolibarr name (or vice versa), so that a trading
+	 * name vs. legal name difference does not trigger a warning. When either side has no usable name after
+	 * normalization, the comparison is inconclusive and the names are considered consistent (no false alarm).
+	 *
+	 * @param 	string[] 	$invoiceNames 	Candidate names from the e-invoice (e.g. BT-27 seller name, BT-28 trading name)
+	 * @param 	string[] 	$dolibarrNames 	Candidate names from the linked third party (e.g. nom, name_alias)
+	 * @return 	bool 						True if consistent (or not comparable), false on a genuine mismatch
+	 */
+	private function _companyNamesAreConsistent(array $invoiceNames, array $dolibarrNames)
+	{
+		$normInvoice = array();
+		foreach ($invoiceNames as $candidate) {
+			$key = $this->_normalizeCompanyNameForComparison($candidate);
+			if ($key !== '') {
+				$normInvoice[$key] = $key;
+			}
+		}
+		$normDolibarr = array();
+		foreach ($dolibarrNames as $candidate) {
+			$key = $this->_normalizeCompanyNameForComparison($candidate);
+			if ($key !== '') {
+				$normDolibarr[$key] = $key;
+			}
+		}
+
+		// Not enough data to compare -> do not raise a warning
+		if (empty($normInvoice) || empty($normDolibarr)) {
+			return true;
+		}
+
+		foreach ($normInvoice as $invoiceName) {
+			foreach ($normDolibarr as $dolibarrName) {
+				if ($invoiceName === $dolibarrName
+					|| strpos($invoiceName, $dolibarrName) !== false
+					|| strpos($dolibarrName, $invoiceName) !== false) {
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 
 
@@ -1194,8 +1328,100 @@ trait CommonProtocol
 
 		$errormsg = '';
 
+		// List of VATEX codes and reasons imported from https://docs.peppol.eu/poacc/billing/3.0/codelist/vatex/
+		$VATEX_CODE_LIST = array(
+			'VATEX-EU-79-C' => array('reason' => 'Exempt based on article 79, point c of Council Directive 2006/112/EC', 'details' => 'Exemptions relating to repayment of expenditures. Remark, Repayment of expenditure is not an exemption in the sense of the VAT Directive but may be handled as such in the context of the EN16931.'),
+			'VATEX-EU-132' => array('reason' => 'Exempt based on article 132 of Council Directive 2006/112/EC', 'details' => 'Exemptions for certain activities in public interest.'),
+			'VATEX-EU-132-1A' => array('reason' => 'Exempt based on article 132, section 1 (a) of Council Directive 2006/112/EC', 'details' => 'The supply by the public postal services of services other than passenger transport and telecommunications services, and the supply of goods incidental thereto.'),
+			'VATEX-EU-132-1B' => array('reason' => 'Exempt based on article 132, section 1 (b) of Council Directive 2006/112/EC', 'details' => 'Hospital and medical care and closely related activities undertaken by bodies governed by public law or, under social conditions comparable with those applicable to bodies governed by public law, by hospitals, centres for medical treatment or diagnosis and other duly recognised establishments of a similar nature'),
+			'VATEX-EU-132-1C' => array('reason' => 'Exempt based on article 132, section 1 (c) of Council Directive 2006/112/EC', 'details' => 'The provision of medical care in the exercise of the medical and paramedical professions as defined by the Member State concerned.'),
+			'VATEX-EU-132-1D' => array('reason' => 'Exempt based on article 132, section 1 (d) of Council Directive 2006/112/EC', 'details' => 'The supply of human organs, blood and milk.'),
+			'VATEX-EU-132-1E' => array('reason' => 'Exempt based on article 132, section 1 (e) of Council Directive 2006/112/EC', 'details' => 'The supply of services by dental technicians in their professional capacity and the supply of dental prostheses by dentists and dental technicians.'),
+			'VATEX-EU-132-1F' => array('reason' => 'Exempt based on article 132, section 1 (f) of Council Directive 2006/112/EC', 'details' => 'The supply of services by independent groups of persons, who are carrying on an activity which is exempt from VAT or in relation to which they are not taxable persons, for the purpose of rendering their members the services directly necessary for the exercise of that activity, where those groups merely claim from their members exact reimbursement of their share of the joint expenses, provided that such exemption is not likely to cause distortion of competition.'),
+			'VATEX-EU-132-1G' => array('reason' => 'Exempt based on article 132, section 1 (g) of Council Directive 2006/112/EC', 'details' => 'The supply of services and of goods closely linked to welfare and social security work, including those supplied by old people\'s homes, by bodies governed by public law or by other bodies recognised by the Member State concerned as being devoted to social wellbeing.'),
+			'VATEX-EU-132-1H' => array('reason' => 'Exempt based on article 132, section 1 (h) of Council Directive 2006/112/EC', 'details' => '"The supply of services and of goods closely linked to the protection of children and young persons by bodies governed by public law or by other organisations recognised by the Member State concerned as being devoted to social wellbeing"'),
+			'VATEX-EU-132-1I' => array('reason' => 'Exempt based on article 132, section 1 (i) of Council Directive 2006/112/EC', 'details' => '" The provision of children\'s or young people\'s education, school or university education, vocational training or retraining, including the supply of services and of goods closely related thereto, by bodies governed by public law having such as their aim or by other organisations recognised by the Member State concerned as having similar objects."'),
+			'VATEX-EU-132-1J' => array('reason' => 'Exempt based on article 132, section 1 (j) of Council Directive 2006/112/EC', 'details' => 'Tuition given privately by teachers and covering school or university education.'),
+			'VATEX-EU-132-1K' => array('reason' => 'Exempt based on article 132, section 1 (k) of Council Directive 2006/112/EC', 'details' => 'The supply of staff by religious or philosophical institutions for the purpose of the activities referred to in points (b), (g), (h) and (i) and with a view to spiritual welfare.'),
+			'VATEX-EU-132-1L' => array('reason' => 'Exempt based on article 132, section 1 (l) of Council Directive 2006/112/EC', 'details' => 'The supply of services, and the supply of goods closely linked thereto, to their members in their common interest in return for a subscription fixed in accordance with their rules by non-profitmaking organisations with aims of a political, trade-union, religious, patriotic, philosophical, philanthropic or civic nature, provided that this exemption is not likely to cause distortion of competition.'),
+			'VATEX-EU-132-1M' => array('reason' => 'Exempt based on article 132, section 1 (m) of Council Directive 2006/112/EC', 'details' => 'The supply of certain services closely linked to sport or physical education by non-profit-making organisations to persons taking part in sport or physical education.'),
+			'VATEX-EU-132-1N' => array('reason' => 'Exempt based on article 132, section 1 (n) of Council Directive 2006/112/EC', 'details' => 'The supply of certain cultural services, and the supply of goods closely linked thereto, by bodies governed by public law or by other cultural bodies recognised by the Member State concerned.'),
+			'VATEX-EU-132-1O' => array('reason' => 'Exempt based on article 132, section 1 (o) of Council Directive 2006/112/EC', 'details' => '"The supply of services and goods, by organisations whose activities are exempt pursuant to points (b), (g), (h), (i), (l), (m) and (n), in connection with fund-raising events organised exclusively for their own benefit, provided that exemption is not likely to cause distortion of competition."'),
+			'VATEX-EU-132-1P' => array('reason' => 'Exempt based on article 132, section 1 (p) of Council Directive 2006/112/EC', 'details' => 'The supply of transport services for sick or injured persons in vehicles specially designed for the purpose, by duly authorised bodies.'),
+			'VATEX-EU-132-1Q' => array('reason' => 'Exempt based on article 132, section 1 (q) of Council Directive 2006/112/EC', 'details' => 'The activities, other than those of a commercial nature, carried out by public radio and television bodies.'),
+			'VATEX-EU-143' => array('reason' => 'Exempt based on article 143 of Council Directive 2006/112/EC', 'details' => 'Exemptions on importation.'),
+			'VATEX-EU-143-1A' => array('reason' => 'Exempt based on article 143, section 1 (a) of Council Directive 2006/112/EC', 'details' => 'The final importation of goods of which the supply by a taxable person would in all circumstances be exempt within their respective territory.'),
+			'VATEX-EU-143-1B' => array('reason' => 'Exempt based on article 143, section 1 (b) of Council Directive 2006/112/EC', 'details' => 'The final importation of goods governed by Council Directives 69/169/EEC (1), 83/181/EEC (2) and 2006/79/EC (3).'),
+			'VATEX-EU-143-1C' => array('reason' => 'Exempt based on article 143, section 1 (c) of Council Directive 2006/112/EC', 'details' => 'The final importation of goods, in free circulation from a third territory forming part of the Community customs territory, which would be entitled to exemption under point (b) if they had been imported within the meaning of the first paragraph of Article 30'),
+			'VATEX-EU-143-1D' => array('reason' => 'Exempt based on article 143, section 1 (d) of Council Directive 2006/112/EC', 'details' => 'The importation of goods dispatched or transported from a third territory or a third country into a Member State other than that in which the dispatch or transport of the goods ends, where the supply of such goods by the importer designated or recognised under Article 201 as liable for payment of VAT is exempt under Article 138.'),
+			'VATEX-EU-143-1E' => array('reason' => 'Exempt based on article 143, section 1 (e) of Council Directive 2006/112/EC', 'details' => 'The reimportation, by the person who exported them, of goods in the state in which they were exported, where those goods are exempt from customs duties.'),
+			'VATEX-EU-143-1F' => array('reason' => 'Exempt based on article 143, section 1 (f) of Council Directive 2006/112/EC', 'details' => 'The importation, under diplomatic and consular arrangements, of goods which are exempt from customs duties.'),
+			'VATEX-EU-143-1FA' => array('reason' => 'Exempt based on article 143, section 1 (fa) of Council Directive 2006/112/EC', 'details' => '"The importation of goods by the European Community, the European Atomic Energy Community, the European Central Bank or the European Investment Bank, or by the bodies set up by the Communities to which the Protocol of 8 April 1965 on the privileges and immunities of the European Communities applies, within the limits and under the conditions of that Protocol and the agreements for its implementation or the headquarters agreements, in so far as it does not lead to distortion of competition"'),
+			'VATEX-EU-143-1G' => array('reason' => 'Exempt based on article 143, section 1 (g) of Council Directive 2006/112/EC', 'details' => '" The importation of goods by international bodies, other than those referred to in point (fa), recognised as such by the public authorities of the host Member State, or by members of such bodies, within the limits and under the conditions laid down by the international conventions establishing the bodies or by headquarters agreements"'),
+			'VATEX-EU-143-1H' => array('reason' => 'Exempt based on article 143, section 1 (h) of Council Directive 2006/112/EC', 'details' => 'The importation of goods, into Member States party to the North Atlantic Treaty, by the armed forces of other States party to that Treaty for the use of those forces or the civilian staff accompanying them or for supplying their messes or canteens where such forces take part in the common defence effort.'),
+			'VATEX-EU-143-1I' => array('reason' => 'Exempt based on article 143, section 1 (i) of Council Directive 2006/112/EC', 'details' => 'The importation of goods by the armed forces of the United Kingdom stationed in the island of Cyprus pursuant to the Treaty of Establishment concerning the Republic of Cyprus, dated 16 August 1960, which are for the use of those forces or the civilian staff accompanying them or for supplying their messes or canteens.'),
+			'VATEX-EU-143-1J' => array('reason' => 'Exempt based on article 143, section 1 (j) of Council Directive 2006/112/EC', 'details' => 'The importation into ports, by sea fishing undertakings, of their catches, unprocessed or after undergoing preservation for marketing but before being supplied.'),
+			'VATEX-EU-143-1K' => array('reason' => 'Exempt based on article 143, section 1 (k) of Council Directive 2006/112/EC', 'details' => 'The importation of gold by central banks.'),
+			'VATEX-EU-143-1L' => array('reason' => 'Exempt based on article 143, section 1 (l) of Council Directive 2006/112/EC', 'details' => 'The importation of gas through a natural gas system or any network connected to such a system or fed in from a vessel transporting gas into a natural gas system or any upstream pipeline network, of electricity or of heat or cooling energy through heating or cooling networks.'),
+			'VATEX-EU-144' => array('reason' => 'Exempt based on article 144 of Council Directive 2006/112/EC', 'details' => 'Exemptions for services linked to the import of goods'),
+			'VATEX-EU-146-1E' => array('reason' => 'Exempt based on article 146 section 1 (e) of Council Directive 2006/112/EC', 'details' => 'Exempt Exemptions for services linked to the export of goods'),
+			'VATEX-EU-148' => array('reason' => 'Exempt based on article 148 of Council Directive 2006/112/EC', 'details' => 'Exemptions related to international transport.'),
+			'VATEX-EU-148-A' => array('reason' => 'Exempt based on article 148, section (a) of Council Directive 2006/112/EC', 'details' => 'Fuel supplies for commercial international transport vessels'),
+			'VATEX-EU-148-B' => array('reason' => 'Exempt based on article 148, section (b) of Council Directive 2006/112/EC', 'details' => 'Fuel supplies for fighting ships in international transport.'),
+			'VATEX-EU-148-C' => array('reason' => 'Exempt based on article 148, section (c) of Council Directive 2006/112/EC', 'details' => 'Maintenance, modification, chartering and hiring of international transport vessels.'),
+			'VATEX-EU-148-D' => array('reason' => 'Exempt based on article 148, section (d) of Council Directive 2006/112/EC', 'details' => 'Supply to of other services to commercial international transport vessels.'),
+			'VATEX-EU-148-E' => array('reason' => 'Exempt based on article 148, section (e) of Council Directive 2006/112/EC', 'details' => 'Fuel supplies for aircraft on international routes.'),
+			'VATEX-EU-148-F' => array('reason' => 'Exempt based on article 148, section (f) of Council Directive 2006/112/EC', 'details' => 'Maintenance, modification, chartering and hiring of aircraft on international routes.'),
+			'VATEX-EU-148-G' => array('reason' => 'Exempt based on article 148, section (g) of Council Directive 2006/112/EC', 'details' => 'Supply to of other services to aircraft on international routes.'),
+			'VATEX-EU-151' => array('reason' => 'Exempt based on article 151 of Council Directive 2006/112/EC', 'details' => 'Exemptions relating to certain Transactions treated as exports.'),
+			'VATEX-EU-151-1A' => array('reason' => 'Exempt based on article 151, section 1 (a) of Council Directive 2006/112/EC', 'details' => 'The supply of goods or services under diplomatic and consular arrangements.'),
+			'VATEX-EU-151-1AA' => array('reason' => 'Exempt based on article 151, section 1 (aa) of Council Directive 2006/112/EC', 'details' => 'The supply of goods or services to the European Community, the European Atomic Energy Community, the European Central Bank or the European Investment Bank, or to the bodies set up by the Communities to which the Protocol of 8 April 1965 on the privileges and immunities of the European Communities applies, within the limits and under the conditions of that Protocol and the agreements for its implementation or the headquarters agreements, in so far as it does not lead to distortion of competition.'),
+			'VATEX-EU-151-1B' => array('reason' => 'Exempt based on article 151, section 1 (b) of Council Directive 2006/112/EC', 'details' => 'The supply of goods or services to international bodies, other than those referred to in point (aa), recognised as such by the public authorities of the host Member States, and to members of such bodies, within the limits and under the conditions laid down by the international conventions establishing the bodies or by headquarters agreements.'),
+			'VATEX-EU-151-1C' => array('reason' => 'Exempt based on article 151, section 1 (c) of Council Directive 2006/112/EC', 'details' => 'The supply of goods or services within a Member State which is a party to the North Atlantic Treaty, intended either for the armed forces of other States party to that Treaty for the use of those forces, or of the civilian staff accompanying them, or for supplying their messes or canteens when such forces take part in the common defence effort.'),
+			'VATEX-EU-151-1D' => array('reason' => 'Exempt based on article 151, section 1 (d) of Council Directive 2006/112/EC', 'details' => 'The supply of goods or services to another Member State, intended for the armed forces of any State which is a party to the North Atlantic Treaty, other than the Member State of destination itself, for the use of those forces, or of the civilian staff accompanying them, or for supplying their messes or canteens when such forces take part in the common defence effort.'),
+			'VATEX-EU-151-1E' => array('reason' => 'Exempt based on article 151, section 1 (e) of Council Directive 2006/112/EC', 'details' => 'The supply of goods or services to the armed forces of the United Kingdom stationed in the island of Cyprus pursuant to the Treaty of Establishment concerning the Republic of Cyprus, dated 16 August 1960, which are for the use of those forces, or of the civilian staff accompanying them, or for supplying their messes or canteens.'),
+			'VATEX-EU-159' => array('reason' => 'Exempt based on article 159 of Council Directive 2006/112/EC', 'details' => 'Exemptions for services linked to supplies of goods intended to be placed under customs warehouses, warehouses other than customs warehouses and similar arrangements.'),
+			'VATEX-EU-309' => array('reason' => 'Exempt based on article 309 of Council Directive 2006/112/EC', 'details' => 'Travel agents performed outside of EU.'),
+			'VATEX-EU-AE' => array('reason' => 'Reverse charge', 'details' => 'Supports EN 16931-1 rule BR-AE-10 - Only use with VAT category code AE'),
+			'VATEX-EU-D' => array('reason' => 'Intra-Community acquisition from second hand means of transport', 'details' => 'Second-hand means of transport - Indication that VAT has been paid according to the relevant transitional arrangements - Only use with VAT category code E'),
+			'VATEX-EU-F' => array('reason' => 'Intra-Community acquisition of second hand goods', 'details' => 'Second-hand goods - Indication that the VAT margin scheme for second-hand goods has been applied. - Only use with VAT category code E'),
+			'VATEX-EU-G' => array('reason' => 'Export outside the EU', 'details' => 'Supports EN 16931-1 rule BR-G-10 - Only use with VAT category code G'),
+			'VATEX-EU-I' => array('reason' => 'Intra-Community acquisition of works of art', 'details' => 'Works of art - Indication that the VAT margin scheme for works of art has been applied. - Only use with VAT category code E'),
+			'VATEX-EU-IC' => array('reason' => 'Intra-Community supply', 'details' => 'Supports EN 16931-1 rule BR-IC-10 - Only use with VAT category code K'),
+			'VATEX-EU-O' => array('reason' => 'Not subject to VAT', 'details' => 'Supports EN 16931-1 rule BR-O-10 - Only use with VAT category code O'),
+			'VATEX-EU-J' => array('reason' => 'Intra-Community acquisition of collectors items and antiques', 'details' => 'Collectors\' items and antiques - Indication that the VAT margin scheme for collector’s items and antiques has been applied. - Only use with VAT category code E'),
+			'VATEX-FR-FRANCHISE' => array('reason' => 'France domestic VAT franchise in base', 'details' => 'For domestic invoicing in France'),
+			'VATEX-FR-CNWVAT' => array('reason' => 'France domestic Credit Notes without VAT, due to supplier forfeit of VAT for discount', 'details' => 'For domestic Credit Notes only in France'),
+			'VATEX-EU-153' => array('reason' => 'Exempt based on article 153 of Council Directive 2006/112/EC', 'details' => ''),
+			'VATEX-FR-CGI261-1' => array('reason' => 'Exempt based on 1 of article 261 of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261-2' => array('reason' => 'Exempt based on 2 of article 261 of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261-3' => array('reason' => 'Exempt based on 3 of article 261 of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261-4' => array('reason' => 'Exempt based on 4 of article 261 of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261-5' => array('reason' => 'Exempt based on 5 of article 261 of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261-7' => array('reason' => 'Exempt based on 7 of article 261 of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261-8' => array('reason' => 'Exempt based on 8 of article 261 of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261A' => array('reason' => 'Exempt based on article 261 A of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261B' => array('reason' => 'Exempt based on article 261 B of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261C-1' => array('reason' => 'Exempt based on 1° of article 261 C of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261C-2' => array('reason' => 'Exempt based on 2° of article 261 C of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261C-3' => array('reason' => 'Exempt based on 3° of article 261 C of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261D-1' => array('reason' => 'Exempt based on 1° of article 261 D of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261D-1BIS' => array('reason' => 'Exempt based on 1°bis of article 261 D of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261D-2' => array('reason' => 'Exempt based on 2° of article 261 D of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261D-3' => array('reason' => 'Exempt based on 3° of article 261 D of the Code Général des Impôts (CGI ; General tax code) Exonération de TVA - Article 261 D-3° du Code Général des Impôts', 'details' => ''),
+			'VATEX-FR-CGI261D-4' => array('reason' => 'Exempt based on 4° of article 261 D of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261E-1' => array('reason' => 'Exempt based on 1° of article 261 E of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI261E-2' => array('reason' => 'Exempt based on 2° of article 261 E of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI277A' => array('reason' => 'Exempt based on article 277 A of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI275' => array('reason' => 'Exempt based on article 275 of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-298SEXDECIESA' => array('reason' => 'Exempt based on article 298 sexdecies A of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-CGI295' => array('reason' => 'Exempt based on article 295 of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-FR-AE' => array('reason' => 'Exempt based on 2 of article 283 of the Code Général des Impôts (CGI ; General tax code)', 'details' => ''),
+			'VATEX-EU-135-1' => array('reason' => 'Exempt based on article 135, section 1 of Council Directive 2006/112/EC', 'details' => ''),
+		);
+
 		$exemptionReason = null;		// BT-120
-		$exemptionReasonCode = null;	// BT-121 - Mut contains a VATEX code. https://docs.peppol.eu/poacc/billing/3.0/codelist/vatex/
+		$exemptionReasonCode = null;	// BT-121 - Must contain a VATEX code. https://docs.peppol.eu/poacc/billing/3.0/codelist/vatex/
 
 		if ($vat_rate > 0) {
 			$categoryVAT = 'S';
@@ -1212,7 +1438,7 @@ trait CommonProtocol
 
 				if (empty($seller->tva_assuj)) {
 					// Can be $categoryVAT = E (VAT exempted) or AE (Autoliquidation)
-					if (1 == 2) {	// Autoliquidation (the VAT is declared by the customer that pay it directly to the government). TODO Not implemented.
+					if (1 == 2) {	// Autoliquidation (the VAT is declared by the customer that pay it directly to the government). TODO Not implemented. @phan-suppress-current-line PhanPluginBothLiteralsBinaryOp
 						// Note: the option ACCOUNTING_FORCE_ENABLE_VAT_REVERSE_CHARGE is for purchase invoices only and is used to dispatch vat differently in accounting..
 						$categoryVAT = 'AE';	// Autoliquidation
 						$exemptionReasonCode = 'VATEX-'.($seller->country_code == 'FR' ? 'FR' : 'EU').'-AE';	// VATEX-EU-AE or VATEX-FR-AE
@@ -1228,7 +1454,7 @@ trait CommonProtocol
 							$exemptionReason = getDolGlobalString('MAIN_INFO_SOCIETE_VAT_EXEMPTION_REASON', 'Tax exempted - TVA en franchise');
 						}
 						if (empty($exemptionReasonCode)) {
-							if ((float) DOl_VERSION < 24.0) {
+							if ((float) DOL_VERSION < 24.0) {
 								throw new Exception('MISSINGSETUP: Your organization is configured to not use VAT. In this case, you must enter into the constant MAIN_INFO_SOCIETE_VAT_EXEMPTION_CODE the reason code of exemption (VATEX-FR-CGI261-1, VATEX-FR-CGI261-4, VATEX-EU-79C.');
 							} else {
 								throw new Exception('MISSINGSETUP: Your organization is configured to not use VAT. In this case, you must enter into the reason code of exemption in the setup of your organization (VATEX-FR-CGI261-1, VATEX-FR-CGI261-4, VATEX-EU-79C.');
@@ -1257,7 +1483,7 @@ trait CommonProtocol
 						// TVA non applicable - Debours (VAT paid by customer):  VATEX-EU-79-C
 						$vatex = '';
 
-						// We try to find code in the vat code definition in the dictionnary table (code only because einvoice_vatex does not exists).
+						// We try to find code in the vat code definition in the dictionary table (code only because einvoice_vatex does not exists).
 						global $db, $mysoc;
 
 						$sql = "SELECT code FROM ".MAIN_DB_PREFIX."c_tva";
@@ -1276,6 +1502,7 @@ trait CommonProtocol
 						}
 
 						$vat_rate = price2num($vat_rate, 2);
+						$constantforvatex = '';
 
 						if (empty($vatex)) {
 							$constantforvatex = "MAIN_VAT_EXEMPTION_CODE_FOR_" . $vat_rate.($vat_src_code ? "_". $vat_src_code : '');
@@ -1295,7 +1522,7 @@ trait CommonProtocol
 					} else {
 						$vatex = '';
 
-						// We try to find code in the vat code definition in the dictionnary table (einvoice_vatex else code).
+						// We try to find code in the vat code definition in the dictionary table (einvoice_vatex else code).
 						global $db, $mysoc;
 
 						$sql = "SELECT code, einvoice_vatex FROM ".MAIN_DB_PREFIX."c_tva";
@@ -1332,11 +1559,14 @@ trait CommonProtocol
 			}
 		}
 
+		// If we have a code but no reason, we try to find the reason in the list of VATEX codes, otherwise we use the code as reason.
+		$exemptionReason = $exemptionReason ?: ($VATEX_CODE_LIST[(string) $exemptionReasonCode]['reason'] ?? $exemptionReasonCode);
+
 		return array('categoryVAT' => $categoryVAT, 'ExemptionReason' => $exemptionReason, 'ExemptionReasonCode' => $exemptionReasonCode);
 	}
 
 
-	/************************************************
+	/**
 	 *    Check line type from external module ?
 	 *
 	 * @param  object $line       line we work on
@@ -1352,11 +1582,18 @@ trait CommonProtocol
 			$line = new OrderLine($db);
 			$line->fetch($fk_origin_line);
 		}
-		if ($line->product_type == 9 && $line->special_code == $this->_getModNumber($searchName)) {
-			return true;
-		} else {
+		if ((int) $line->product_type != 9) {
 			return false;
 		}
+		// Legacy: line created by the given external module, matched on its special_code.
+		if ($line->special_code == $this->_getModNumber($searchName)) {
+			return true;
+		}
+		// The title / subtotal feature is now part of the Dolibarr core (htdocs/subtotals, trait
+		// CommonSubtotal with $PRODUCT_TYPE = 9 and special_code = SUBTOTALS_SPECIAL_CODE). Such lines
+		// no longer carry the legacy modSubtotal module number, but any product_type 9 line is a
+		// title / subtotal / page-break pseudo-line, so we treat them all as subtotal lines.
+		return $searchName == 'modSubtotal';
 	}
 
 	/**
@@ -1373,5 +1610,192 @@ trait CommonProtocol
 			return $objMod->numero;
 		}
 		return 0;
+	}
+
+
+	/**
+	 * Link an inbound supplier invoice to its Dolibarr purchase order (commande fournisseur).
+	 *
+	 * Uses the purchase order reference (BT-13, BuyerOrderReferencedDocument/IssuerAssignedID) carried by
+	 * the invoice. The lookup is reference-exact (after trimming) AND scoped to the resolved supplier, so a
+	 * matching reference belonging to another supplier is never linked. The link is only created on a single
+	 * unambiguous match; several matches are flagged (no auto-link) and the absence of a match is silent.
+	 *
+	 * This is internal ERP reconciliation logic and must NEVER block import. See issue #303.
+	 *
+	 * @param 	FactureFournisseur 	$supplierInvoice 	Freshly created supplier invoice (must expose ->id)
+	 * @param 	int 				$socId 				Resolved supplier third party id
+	 * @param 	string 				$orderReference 	BT-13 purchase order reference carried by the invoice
+	 * @return 	string 									Status message for the import log ('' when nothing was done)
+	 */
+	private function _linkSupplierInvoiceToPurchaseOrder($supplierInvoice, $socId, $orderReference)
+	{
+		global $db, $langs;
+
+		$orderReference = trim((string) $orderReference);
+		if ($orderReference === '' || empty($supplierInvoice->id) || (int) $socId <= 0) {
+			return '';
+		}
+
+		require_once DOL_DOCUMENT_ROOT . '/fourn/class/fournisseur.commande.class.php';
+
+		// Reference-exact, supplier-scoped, entity-aware lookup to avoid false positives
+		$sql = "SELECT rowid FROM " . MAIN_DB_PREFIX . "commande_fournisseur";
+		$sql .= " WHERE ref = '" . $db->escape($orderReference) . "'";
+		$sql .= " AND fk_soc = " . ((int) $socId);
+		$sql .= " AND entity IN (" . getEntity('supplier_order') . ")";
+
+		$resql = $db->query($sql);
+		if (!$resql) {
+			dol_syslog(get_class($this) . '::_linkSupplierInvoiceToPurchaseOrder DB error: ' . $db->lasterror(), LOG_ERR);
+			return '';
+		}
+
+		$num = $db->num_rows($resql);
+
+		if ($num == 0) {
+			// No order for this supplier. Surface a warning only if the reference exists for another supplier
+			// (likely mis-reference), otherwise stay silent (unchanged behaviour).
+			$sqlOther = "SELECT rowid FROM " . MAIN_DB_PREFIX . "commande_fournisseur";
+			$sqlOther .= " WHERE ref = '" . $db->escape($orderReference) . "'";
+			$sqlOther .= " AND fk_soc <> " . ((int) $socId);
+			$sqlOther .= " AND entity IN (" . getEntity('supplier_order') . ")";
+			$resqlOther = $db->query($sqlOther);
+			if ($resqlOther && $db->num_rows($resqlOther) > 0) {
+				$warn = $langs->trans('EInvoiceSupplierOrderRefWrongSupplier', $orderReference);
+				dol_syslog(get_class($this) . '::_linkSupplierInvoiceToPurchaseOrder ' . $warn, LOG_WARNING);
+				setEventMessages($warn, null, 'warnings');
+				return $warn;
+			}
+			dol_syslog(get_class($this) . '::_linkSupplierInvoiceToPurchaseOrder No supplier order "' . $orderReference . '" for socid ' . ((int) $socId), LOG_DEBUG);
+			return '';
+		}
+
+		if ($num > 1) {
+			// Ambiguous: do not auto-link, flag for manual resolution
+			$warn = $langs->trans('EInvoiceSupplierOrderLinkAmbiguous', $orderReference);
+			dol_syslog(get_class($this) . '::_linkSupplierInvoiceToPurchaseOrder ' . $warn, LOG_WARNING);
+			setEventMessages($warn, null, 'warnings');
+			return $warn;
+		}
+
+		$orderId = (int) $db->fetch_object($resql)->rowid;
+
+		$res = $supplierInvoice->add_object_linked('order_supplier', $orderId);
+		if ($res > 0) {
+			$msg = $langs->trans('EInvoiceSupplierInvoiceLinkedToOrder', $orderReference);
+			dol_syslog(get_class($this) . '::_linkSupplierInvoiceToPurchaseOrder ' . $msg, LOG_DEBUG);
+			return $msg;
+		}
+
+		dol_syslog(get_class($this) . '::_linkSupplierInvoiceToPurchaseOrder Failed to link order ' . $orderId . ' to invoice ' . $supplierInvoice->id . ': ' . $supplierInvoice->error, LOG_ERR);
+		return '';
+	}
+
+	/**
+	 * Map of UNTDID 4461 payment means codes (BT-81, ram:TypeCode under
+	 * SpecifiedTradeSettlementPaymentMeans) to Dolibarr's paiement.code.
+	 * @var array<int|'ZZZ',string>
+	 */
+	private static $UNTDID4461_TO_DOLIBARR_PAIEMENT_CODE = [
+		'10' => 'LIQ',	// Cash
+		'20' => 'CHQ',	// Check
+		'23' => 'TRA',	// Banque check
+		'30' => 'VIR',	// Bank transfer
+		'45' => 'TIP',	// Referenced home-banking credit transfer
+		'54' => 'CB',	// Credit card
+		'59' => 'PRE',	// SEPA direct debit
+		'68' => 'VAD',	// Online payment
+		'1' => 'FAC',	// local payment method | not defined
+	];
+
+	/**
+	 * Fill Payment due on (date_echeance), Payment Terms (cond_reglement_id) and
+	 * Payment method (mode_reglement_id) on a Dolibarr supplier invoice from data parsed
+	 * out of a received CII/Factur-X document.
+	 *
+	 * @param  FactureFournisseur 	$supplierInvoice 	Supplier invoice being built (modified by reference)
+	 * @param  array 				$parsedHeader 		Parsed CII header data (see CIIProtocol::parseInvoiceHeader())
+	 * @return array{message:string} 					Informational messages about what could/could not be applied (never blocking)
+	 */
+	private function _applyPaymentInfoToSupplierInvoice(FactureFournisseur $supplierInvoice, array $parsedHeader)
+	{
+		global $db;
+
+		$messages = array();
+
+		//------------------------
+		// Payment due on (BT-9)
+		//------------------------
+		$dueDate = null;
+		if (!empty($parsedHeader['paymentDueDate'])) {
+			$dueDateTimestamp = dol_stringtotime($parsedHeader['paymentDueDate']);
+			if ($dueDateTimestamp) {
+				$dueDate = $dueDateTimestamp;
+				$supplierInvoice->date_echeance = $dueDate;
+			} else {
+				$messages[] = 'Payment due date "' . $parsedHeader['paymentDueDate'] . '" could not be parsed, left empty.';
+			}
+		}
+
+		//---------------------------------------------------------------
+		// Payment Terms (derived from Invoice date <-> Payment due on)
+		//---------------------------------------------------------------
+		if ($dueDate && !empty($supplierInvoice->date)) {
+			$invoiceDateTimestamp = is_numeric($supplierInvoice->date) ? $supplierInvoice->date : dol_stringtotime((string) $supplierInvoice->date);
+
+			if ($invoiceDateTimestamp) {
+				$nbDays = (int) round(($dueDate - $invoiceDateTimestamp) / 86400);
+
+				if ($nbDays >= 0) {
+					$sql = "SELECT rowid FROM " . MAIN_DB_PREFIX . "c_payment_term";
+					$sql .= " WHERE nbjour = " . ((int) $nbDays);
+					$sql .= " AND type_cdr = 0"; // fixed number of days only (no end of month)
+					$sql .= " AND active = 1";
+					$sql .= " ORDER BY rowid ASC"; // deterministic pick if duplicates
+					$sql .= " LIMIT 1";
+
+					$resql = $db->query($sql);
+					if ($resql && $db->num_rows($resql) == 1) {
+						$obj = $db->fetch_object($resql);
+						$supplierInvoice->cond_reglement_id = (int) $obj->rowid;
+						$messages[] = 'Payment Terms matched dictionary entry for ' . $nbDays . ' day(s).';
+					} else {
+						$messages[] = 'No matching Payment Terms dictionary entry found for ' . $nbDays . ' day(s) between invoice date and due date, left empty.';
+					}
+				} else {
+					$messages[] = 'Payment due date is before invoice date, cannot derive Payment Terms, left empty.';
+				}
+			}
+		}
+
+		//-------------------------------------
+		// Payment method (BT-81, UNTDID 4461)
+		// ------------------------------------
+		if (!empty($parsedHeader['paymentMeansCode'])) {
+			$untdidCode = trim((string) $parsedHeader['paymentMeansCode']);
+
+			if (isset(self::$UNTDID4461_TO_DOLIBARR_PAIEMENT_CODE[$untdidCode])) {
+				$dolibarrPaymentCode = self::$UNTDID4461_TO_DOLIBARR_PAIEMENT_CODE[$untdidCode];
+
+				$sql = "SELECT id FROM " . MAIN_DB_PREFIX . "c_paiement";
+				$sql .= " WHERE code = '" . $db->escape($dolibarrPaymentCode) . "'";
+				$sql .= " AND active = 1";
+				$sql .= " LIMIT 1";
+
+				$resql = $db->query($sql);
+				if ($resql && $db->num_rows($resql) == 1) {
+					$obj = $db->fetch_object($resql);
+					$supplierInvoice->mode_reglement_id = (int) $obj->id;
+					$messages[] = 'Payment method mapped from UNTDID 4461 code ' . $untdidCode . ' to Dolibarr code ' . $dolibarrPaymentCode . '.';
+				} else {
+					$messages[] = 'Payment method code ' . $dolibarrPaymentCode . ' (from UNTDID 4461 code ' . $untdidCode . ') not found or not active in Dolibarr dictionary, left empty.';
+				}
+			} else {
+				$messages[] = 'UNTDID 4461 payment means code ' . $untdidCode . ' has no known Dolibarr mapping, left empty.';
+			}
+		}
+
+		return array('message' => implode("<br>\n", $messages));
 	}
 }

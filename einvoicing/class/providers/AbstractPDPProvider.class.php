@@ -41,7 +41,7 @@ abstract class AbstractPDPProvider
 	/** @var array Provider configuration parameters */
 	protected $config = [];
 
-	/** @var array OAuth token information */
+	/** @var array<string,null|int|string> OAuth token information */
 	protected $tokenData = [];
 
 	/** @var AbstractProtocol Exchange protocol */
@@ -49,6 +49,9 @@ abstract class AbstractPDPProvider
 
 	/** @var string Provider name */
 	public $providerName;
+
+	/** @var string Short provider code, defined by each concrete provider (e.g. 'SuperPDP', 'Esalink') */
+	public $name;
 
 	/** @var string Help message to guide users in obtaining credentials for this provider */
 	public $helpToGetCredentials;
@@ -92,7 +95,7 @@ abstract class AbstractPDPProvider
 	/**
 	 * Get current token in memory (loaded by fetchOAuthTokenDB in constructor)
 	 *
-	 * @return mixed	Token
+	 * @return array<string,null|int|string>	Token
 	 */
 	public function getTokenData()
 	{
@@ -139,9 +142,9 @@ abstract class AbstractPDPProvider
 	abstract public function checkHealth();
 
 	/**
-	 * Get the base API URL for Esalink PDP
+	 * Get the base API URL for provider depending on the mode (authentication or regular API calls).
 	 *
-	 * @param string 	$mode 		'authent' or 'api'
+	 * @param string 	$mode 		'auth', 'api' or 'ap_api'
 	 * @return string				URL of the endpoint to call depending on the mode (authentication or regular API calls)
 	 */
 	public function getApiUrl($mode = 'api')
@@ -152,22 +155,124 @@ abstract class AbstractPDPProvider
 		// the "real mode" switch (the const gets stored as "0" instead of being deleted).
 		$prod = getDolGlobalInt('EINVOICING_LIVE');
 
+		$url = '';
 		if ($mode === 'auth') {
 			$url = $this->config['test_auth_url'];
 			if (!empty($prod)) {
 				$url = $this->config['prod_auth_url'];
 			}
 			return $url;
-		} else {
+		} elseif ($mode === 'api') {
 			$url = $this->config['test_api_url'];
 			if (!empty($prod)) {
 				$url = $this->config['prod_api_url'];
+			}
+		} elseif ($mode === 'ap_api') {
+			$url = $this->config['ap_api_url'];
+			if (!empty($prod)) {
+				$url = $this->config['ap_api_url'];
+			}
+		} elseif ($mode === 'afnor_directory') {
+			// Base of the standardized AFNOR Directory Service (XP Z12-013). Only providers that expose
+			// it set the config keys; the others return an empty string and skip the standardized check.
+			$url = !empty($this->config['test_afnor_directory_url']) ? $this->config['test_afnor_directory_url'] : '';
+			if (!empty($prod) && !empty($this->config['prod_afnor_directory_url'])) {
+				$url = $this->config['prod_afnor_directory_url'];
 			}
 		}
 
 		return $url;
 	}
 
+	/**
+	 * Check if the provider has a validator endpoint.
+	 *
+	 * @return bool True if the provider has a validator endpoint, false otherwise.
+	 */
+	public function hasValidator(): bool
+	{
+		return !empty($this->config['has_validator']);
+	}
+
+	/**
+	 * Check whether a recipient has an active reception address in the Approved Platforms
+	 * directory (annuaire des Plateformes Agreees) before attempting to send an e-invoice.
+	 *
+	 * A recipient that is absent from the directory, or present but without any active routing
+	 * line, cannot receive electronic invoices: sending would be rejected by the platform with
+	 * a routing error (lifecycle fr:213). Checking beforehand lets the caller warn the user with
+	 * a clear message instead of the opaque platform rejection.
+	 *
+	 * Providers that do not expose a directory lookup keep the default 'unsupported' status so
+	 * the feature degrades gracefully and never blocks them.
+	 *
+	 * @param 	string 	$idprof1 	Recipient professional id 1 (SIREN for France)
+	 * @return 	array{status:string,reachable:int,entries:int,active:int,identifier:string,message:string,httpcode:int}
+	 *								status: unsupported|error|absent|inactive|routable ;
+	 *								reachable: 1 routable, 0 not routable, -1 unknown ;
+	 *								identifier: first active electronic address found (if any).
+	 */
+	public function checkRecipientDirectory($idprof1)
+	{
+		$result = array('status' => 'unsupported', 'reachable' => -1, 'entries' => 0, 'active' => 0, 'identifier' => '', 'message' => '', 'httpcode' => 0);
+
+		// The standardized route check uses the AFNOR Directory Service (XP Z12-013), so any conformant
+		// Approved Platform is supported. A provider that does not expose that base keeps the
+		// 'unsupported' status (it may still override this method with its own directory lookup).
+		$base = $this->getApiUrl('afnor_directory');
+		if (empty($base) || !method_exists($this, 'callApi')) {
+			return $result;
+		}
+
+		$siren = preg_replace('/[^0-9]/', '', (string) $idprof1);
+		if (!preg_match('/^[0-9]{9}$/', (string) $siren)) {
+			$result['status'] = 'error';
+			$result['message'] = 'EInvoicingDirectoryNoSiren';
+			return $result;
+		}
+
+		// 1) Search the directory lines for a reception address declared for this SIREN.
+		$body = json_encode(array('filters' => array('siren' => array('op' => 'strict', 'value' => $siren))));
+		$response = $this->callApi('afnor-directory/v1/directory-line/search', 'POST', $body, array(), 'precheck_directory');
+		$result['httpcode'] = (int) (isset($response['status_code']) ? $response['status_code'] : 0);
+
+		if ($result['httpcode'] != 200) {
+			$result['status'] = 'error';
+			$result['message'] = isset($response['errorMessage']) ? $response['errorMessage'] : ('HTTP ' . $result['httpcode']);
+			return $result;
+		}
+
+		$lines = array();
+		if (isset($response['response']['results']) && is_array($response['response']['results'])) {
+			$lines = $response['response']['results'];
+		}
+		$result['entries'] = count($lines);
+
+		if ($result['entries'] > 0) {
+			// At least one directory line: the recipient has a reception address on an Approved Platform.
+			$result['active'] = $result['entries'];
+			$result['status'] = 'routable';
+			$result['reachable'] = 1;
+			foreach ($lines as $line) {
+				if ($result['identifier'] === '' && !empty($line['addressingIdentifier'])) {
+					$result['identifier'] = (string) $line['addressingIdentifier'];
+				}
+			}
+			return $result;
+		}
+
+		// 2) No directory line: tell apart a legal unit known to the directory but not able to receive
+		//    yet (inactive) from a SIREN that is unknown to the directory (absent).
+		$consult = $this->callApi('afnor-directory/v1/siren/code-insee:' . urlencode($siren), 'GET', false, array(), 'precheck_directory');
+		$consultcode = (int) (isset($consult['status_code']) ? $consult['status_code'] : 0);
+		if ($consultcode == 200 && !empty($consult['response']['siren'])) {
+			$result['status'] = 'inactive';
+		} else {
+			$result['status'] = 'absent';
+		}
+		$result['reachable'] = 0;
+		return $result;
+	}
 
 	/**
 	 * Generate a UUID used to correlate logs between Dolibarr and PDP.
@@ -202,6 +307,38 @@ abstract class AbstractPDPProvider
 		return $this->config;
 	}
 
+
+	/**
+	 * Try to get a flow data from its id and doc type, using API
+	 * @param $flowId 		The id of the flow
+	 * @param $docType 		The type of document we want to return
+	 * @param $callType		The type of call to use when calling API
+	 *
+	 * @return array{status_code:int,response:null|string|array<string,mixed>,errorCode?:string,errorMessage?:string,id?:int,call_id?:string}
+	 */
+	public function fetchFlowData($flowId, $docType, $callType = '')
+	{
+		if (!in_array($docType, ['Metadata', 'Original', 'Converted', 'ReadableView'])) {
+			$docType = 'Converted';
+		}
+
+		// Retrieve the PDF file converted by Access Point
+		$flowResource = 'flows/' . $flowId;
+		$flowUrlparams = array(
+			'docType' => $docType,
+		);
+		$flowResource .= '?' . http_build_query($flowUrlparams);
+		$flowResponse = $this->callApi(
+			$flowResource,
+			"GET",
+			false,
+			['Accept' => 'application/octet-stream'],
+			$callType
+		);
+
+		return $flowResponse;
+	}
+
 	/**
 	 * Send a sample electronic invoice for testing purposes.
 	 * This function generates a sample invoice and sends it to PDP
@@ -213,15 +350,25 @@ abstract class AbstractPDPProvider
 
 
 	/**
+	 * Validate an electronic invoice file using the provider's validation service.
+	 *
+	 * @param 	int 	$idinvoice 	ID of the invoice to check
+	 * @param 	string 	$filePath 	Path to the invoice file to validate
+	 * @return 	array|string 		Validation result or error message.
+	 */
+	abstract public function validateEInvoiceFile($idinvoice, $filePath);
+
+
+	/**
 	 * Call the provider API.
 	 *
 	 * @param string 						$resource 	    Resource relative URL ('Flows', 'healthcheck' or others)
-	 * @param string                        $method         HTTP method ('GET', 'POST', etc.)
-	 * @param array<string, mixed>|false 	$options 	    Options for the request
+	 * @param 'POST'|'GET'|'HEAD'|'PUT'|'PUTALREADYFORMATED'|'POSTALREADYFORMATED'|'DELETE' $method         HTTP method (dolibarr's types)
+	 * @param string|false 	$options 	    Options for the request (JSON encoded)
 	 * @param array<string, string>         $extraHeaders   Optional additional headers
 	 * @param string|null                   $callType       Functional type of the API call for logging purposes (e.g., 'sync_flows', 'send_invoice')
 	 *
-	 * @return array{status_code:int,response:null|string|array<string,mixed>,call_id:null|string}
+	 * @return array{status_code:int,response:null|string|array<string,mixed|array<string,mixed>>,call_id:null|string}
 	 */
 	abstract public function callApi($resource, $method, $options = false, $extraHeaders = [], $callType = '');
 
@@ -230,7 +377,7 @@ abstract class AbstractPDPProvider
 	 * @param   int   $syncFromDate     Timestamp from which to start synchronization. If 0, begins from epoch (1970-01-01).
 	 * @param   int   $limit            Maximum number of flows to synchronize. 0 means no limit.
 	 *
-	 * @return 	bool|array{res:int, messages:array<string>, details:array<string>, actions:array<string>} 	True on success, false on failure along with messages, details for debugging, and suggested optional actions.
+	 * @return 	bool|array{res:int, messages:string[], totalFlows?:?int, alreadyExist?:int, syncedFlows?:int, batchlimit?:int, actions?:array<string,array{actionurl:string,actioncode:string,action:string,businessmessage:string}>, details?:string[]} 	True on success, false on failure along with messages, details for debugging, and suggested optional actions.
 	 */
 	abstract public function syncFlows($syncFromDate = 0, $limit = 0);
 
@@ -334,7 +481,7 @@ abstract class AbstractPDPProvider
 	/**
 	 * Retrieve OAuth token for the given PDP service.
 	 *
-	 * @return array|false   Array with keys 'access_token', 'refresh_token', 'expire_at', or false if not found
+	 * @return array{token:string,refresh_token:string,token_expires_at:string}|false   Array with keys 'access_token', 'refresh_token', 'expire_at', or false if not found
 	 */
 	public function fetchOAuthTokenDB()
 	{
@@ -362,9 +509,9 @@ abstract class AbstractPDPProvider
 
 		// Prepare SQL
 		$sql = "SELECT tokenstring, tokenstring_refresh, expire_at
-                FROM ".MAIN_DB_PREFIX."oauth_token
-                WHERE service = '".$db->escape($serviceName)."'
-                AND entity = ".((int) $conf->entity)." LIMIT 1";
+				FROM ".MAIN_DB_PREFIX."oauth_token
+				WHERE service = '".$db->escape($serviceName)."'
+				AND entity = ".((int) $conf->entity)." LIMIT 1";
 
 		$resql = $db->query($sql);
 		if (!$resql) {
@@ -379,9 +526,9 @@ abstract class AbstractPDPProvider
 		$obj = $db->fetch_object($resql);
 
 		return [
-			'token' => $obj->tokenstring,
-			'refresh_token' => $obj->tokenstring_refresh,
-			'token_expires_at' => $db->jdate($obj->expire_at, 'gmt')
+			'token' => (string) $obj->tokenstring,
+			'refresh_token' => (string) $obj->tokenstring_refresh,
+			'token_expires_at' => (string) $db->jdate($obj->expire_at, 'gmt')
 		];
 	}
 
@@ -397,11 +544,20 @@ abstract class AbstractPDPProvider
 
 		// Build service name depending on environment
 		$serviceName = $this->config['dol_prefix'] . '_' . ($this->config['live'] ? 'PROD' : 'TEST');
+		// For backward compatibility with Dolibarr versions < 23.0.0
+
+		if (version_compare(DOL_VERSION, '23.0.0', '<')) {
+			require_once DOL_DOCUMENT_ROOT."/core/lib/admin.lib.php";
+			dolibarr_del_const($this->db, $serviceName.'_TOKEN', $conf->entity);
+			dolibarr_del_const($this->db, $serviceName.'_REFRESH', $conf->entity);
+			dolibarr_del_const($this->db, $serviceName.'_EXPIRE', $conf->entity);
+			return true;
+		}
 
 		// Check if a token already exists for this service
 		$sql_check = "DELETE FROM ".MAIN_DB_PREFIX."oauth_token
-                        WHERE service = '".$db->escape($serviceName)."'
-                        AND entity = ".((int) $conf->entity);
+						WHERE service = '".$db->escape($serviceName)."'
+						AND entity = ".((int) $conf->entity);
 
 		$resql = $db->query($sql_check);
 		if (!$resql) {
@@ -446,7 +602,7 @@ abstract class AbstractPDPProvider
 
 		if ($resql) {
 			$obj = $db->fetch_object($resql);
-			$LastSyncDate = $obj->last_sync_date  ? strtotime($obj->last_sync_date) : null;
+			$LastSyncDate = $obj->last_sync_date ? strtotime($obj->last_sync_date) : null;
 		} else {
 			dol_syslog(__METHOD__ . " SQL warning: Failed to get last sync date: we try to sync all flows from today", LOG_WARNING);
 		}
@@ -461,6 +617,61 @@ abstract class AbstractPDPProvider
 		}
 
 		return $LastSyncDate;
+	}
+
+	/**
+	 * Log an API call into llx_einvoicing_call using a SEPARATE database connection.
+	 *
+	 * The call trace must survive even when the caller's main transaction is rolled
+	 * back on error (see issue #291): a failed send_invoice rolls back the doActions()
+	 * transaction, which would otherwise wipe the very log we need to diagnose it.
+	 * Writing the log through an independent connection ($dbhistory) decouples it from
+	 * the business transaction, so it is committed whether the action succeeds or fails,
+	 * without ever forcing a commit on the rest. Same approach as the webhook logging.
+	 *
+	 * @param   string                      $callType   Functional type of the call (empty = do not log)
+	 * @param   string                      $resource   API resource/endpoint (without leading slash)
+	 * @param   string                      $method     HTTP method (POSTALREADYFORMATED is normalized to POST)
+	 * @param   string|array<mixed>         $params     Request body
+	 * @param   string|array<mixed>         $response   Response payload
+	 * @param   int                         $statusCode HTTP status code of the response
+	 * @return  ?array{id:int,call_id:string}           Created log identifiers, or null if not logged
+	 */
+	protected function logCall($callType, $resource, $method, $params, $response, $statusCode)
+	{
+		global $conf, $user, $dolibarr_main_db_pass, $dbhistory;
+
+		if (empty($callType)) { // TODO : Add a parameter in module configuration to enable/disable logging
+			return null;
+		}
+
+		// Reuse a process-wide independent connection so the trace is not bound to the
+		// caller's transaction and persists even if that transaction is rolled back.
+		if (empty($dbhistory)) {
+			$dbhistory = getDoliDBInstance($conf->db->type, $conf->db->host, (string) $conf->db->user, $dolibarr_main_db_pass, (string) $conf->db->name, (int) $conf->db->port);
+		}
+
+		$dbhistory->begin();
+
+		$call = new Call($dbhistory);
+		$call->call_id = $call->getNextCallId();
+		$call->call_type = $callType;
+		$call->method = ($method == 'POSTALREADYFORMATED' ? 'POST' : $method);
+		$call->endpoint = '/' . $resource;
+		$call->request_body = is_array($params) ? json_encode($params) : $params;
+		$call->response = is_array($response) ? json_encode($response) : $response;
+		$call->provider = $this->name;
+		$call->entity = $conf->entity;
+		$call->status = ($statusCode == 200 || $statusCode == 202) ? 1 : 0;
+
+		if ($call->create($user) > 0) {
+			$dbhistory->commit();
+			return array('id' => $call->id, 'call_id' => $call->call_id);
+		}
+
+		$dbhistory->rollback();
+		dol_syslog(__METHOD__ . " Failed to log API call to PDP provider: " . $call->error . " - " . implode(',', $call->errors), LOG_ERR);
+		return null;
 	}
 
 	/**
@@ -486,7 +697,8 @@ abstract class AbstractPDPProvider
 		if (!isset($object->thirdparty->id)) {
 			$object->fetch_thirdparty();
 		}
-		$actioncomm->socid = $object->thirdparty->id;
+		// $object->thirdparty may still be null (e.g. document/flow with no resolvable socid)
+		$actioncomm->socid = is_object($object->thirdparty ?? null) ? $object->thirdparty->id : 0;
 		$actioncomm->label = $eventLabel;
 		$actioncomm->note_private = $eventMesg;
 		$actioncomm->fk_project = $object->fk_project;
@@ -528,4 +740,26 @@ abstract class AbstractPDPProvider
 	 * @return array{res:int, message:string}       Returns array with 'res' (1 on success, -1 on failure) with a 'message'.
 	 */
 	abstract public function sendStatusMessage($object, $statusCode, $reasonCode = '');
+
+	/**
+	 * Clear the fixed "last invoice that could not be processed" diagnostic files at the start of a
+	 * sync run, so the diagnostic shown in the document list reflects the latest run. Each failed flow
+	 * during the run re-creates its slot (see AbstractProtocol::cleanupIncomingTempFiles()). Call this
+	 * from syncFlows() (the batch), not from syncFlow(), so a later flow does not erase an earlier
+	 * failure within the same run.
+	 *
+	 * @return void
+	 */
+	protected function clearIncomingDiagnosticFiles()
+	{
+		global $conf;
+
+		$tempDir = $conf->einvoicing->dir_temp;
+		$diagFiles = array('facturx.pdf', 'facturx_readable.pdf', 'einvoice.xml', 'einvoice_readable.pdf');
+		foreach ($diagFiles as $f) {
+			if (file_exists($tempDir . '/' . $f)) {
+				dol_delete_file($tempDir . '/' . $f);
+			}
+		}
+	}
 }

@@ -26,7 +26,9 @@
 if (!defined('NOLOGIN')) {
 	define("NOLOGIN", 1); // This means this output page does not require to be logged.
 }
-
+if (!defined('NOCSRFCHECK')) {
+	define("NOCSRFCHECK", 1);
+}
 // Load Dolibarr environment
 $res = 0;
 // Try main.inc.php into web root known defined into CONTEXT_DOCUMENT_ROOT (not always defined)
@@ -131,13 +133,55 @@ $pdpprovider = new PDPProviderManager($db);
 $setupprovider = $pdpprovider->getProvider($providertouse);
 
 
-$keyforparamid = 'EINVOICING_'.strtoupper($providertouse).'_CLIENT_ID';
-$keyforparamsecret = 'EINVOICING_'.strtoupper($providertouse).'_CLIENT_SECRET';
+$keyforparamid = 'EINVOICING_'.strtoupper($providertouse).'_CLIENT_ID'.(getDolGlobalInt('EINVOICING_LIVE') ? '_PROD' : '');
+$keyforparamsecret = 'EINVOICING_'.strtoupper($providertouse).'_CLIENT_SECRET'.(getDolGlobalInt('EINVOICING_LIVE') ? '_PROD' : '');
 if (!getDolGlobalString($keyforparamid)) {
 	accessforbidden('Setup of service '.$keyforparamid.' is not complete. Customer ID is missing');
 }
 if (!getDolGlobalString($keyforparamsecret)) {
 	accessforbidden('Setup of service '.$keyforparamid.' is not complete. Secret key is missing');
+}
+
+
+// Server-to-server token refresh for "via partner" (grey-label) clients.
+// A delegated client holds a refresh_token but NOT the client_secret, so it cannot run the
+// refresh_token grant by itself. It POSTs its refresh_token here; this proxy (which holds the
+// secret) performs the grant against the PA and returns the rotated tokens as JSON. This is a
+// background machine-to-machine call: no browser, no session/state, no redirect.
+if (GETPOST('action', 'aZ09') == 'refresh' && GETPOST('grant_type', 'aZ09') == 'refresh_token') {
+	header('Content-Type: application/json; charset=UTF-8');
+
+	$refresh_token = preg_replace('/[^A-Za-z0-9._\-]/', '', (string) GETPOST('refresh_token', 'restricthtml'));
+	if (empty($refresh_token)) {
+		http_response_code(400);
+		echo json_encode(array('error' => 'invalid_request', 'error_description' => 'refresh_token is missing'));
+		exit;
+	}
+
+	$providerconfig = $setupprovider->getConf();
+	$oauthtokenurl = $providerconfig['prod_auth_url'];
+	$oauthtokenurl .= (preg_match('/\/$/', $oauthtokenurl) ? '' : '/').'token';
+
+	$params = array(
+		'grant_type'    => 'refresh_token',
+		'refresh_token' => $refresh_token,
+		'client_id'     => getDolGlobalString($keyforparamid),
+		'client_secret' => getDolGlobalString($keyforparamsecret),
+	);
+
+	require_once DOL_DOCUMENT_ROOT.'/core/lib/geturl.lib.php';
+	$resultget = getURLContent($oauthtokenurl, 'POST', http_build_query($params), 1, array('Content-Type: application/x-www-form-urlencoded'));
+
+	$httpcode = empty($resultget['http_code']) ? 0 : $resultget['http_code'];
+	if (empty($resultget['curl_error_no']) && $httpcode == 200) {
+		// Pass the PA response (access_token, refresh_token, expires_in, ...) straight back to the client.
+		echo $resultget['content'];
+	} else {
+		dol_syslog("proxy_oauthcallback refresh failed http_code=".$httpcode, LOG_WARNING);
+		http_response_code($httpcode ? $httpcode : 502);
+		echo !empty($resultget['content']) ? $resultget['content'] : json_encode(array('error' => 'proxy_refresh_failed'));
+	}
+	exit;
 }
 
 
@@ -223,7 +267,10 @@ if (empty($code) && !GETPOST('error')) {
 	// Add more param
 	$url .= '&nonce='.bin2hex(random_bytes(64 / 8));
 
-	//var_dump($keyforurl, $url, $statewithscopeonly, $origin_state);exit;
+	if (GETPOSTISSET('superpdp_company_number') && GETPOSTISSET('superpdp_company_number_scheme')) {
+		$url .= '&superpdp_company_number=' . GETPOST('superpdp_company_number', 'aZ09');
+		$url .= '&superpdp_company_number_scheme=' . GETPOST('superpdp_company_number_scheme', 'aZ09');
+	}
 
 	// we go on oauth provider authorization page, we will then go back on this page but into the other branch of the if (!GETPOST('code'))
 	header('Location: '.$url);
@@ -262,7 +309,9 @@ if (empty($code) && !GETPOST('error')) {
 					"redirect_uri" => $redirect_uri
 				];
 
-				$resultget = getURLContent($oauthserverurl, 'POST', $params);
+				// Send as application/x-www-form-urlencoded (the OAuth 2.0 standard for the token endpoint),
+				// not multipart/form-data which an array param would produce.
+				$resultget = getURLContent($oauthserverurl, 'POST', http_build_query($params), 1, array('Content-Type: application/x-www-form-urlencoded'));
 
 				$reg = array();
 				$origin_redirect_uri = '';
@@ -279,10 +328,10 @@ if (empty($code) && !GETPOST('error')) {
 
 					$content = json_decode($resultget['content'], true);
 
-					$access_token = $content['access_token'];
-					$expires_in = $content['expires_in'];
-					$refresh_token = $content['refresh_token'];
-					$scope = $content['scope'];
+					$access_token = $content['access_token'] ?? '';
+					$expires_in = $content['expires_in'] ?? '';
+					$refresh_token = $content['refresh_token'] ?? '';
+					$scope = $content['scope'] ?? '';
 
 					$origin_redirect_uri .= '?accesstoken='.urlencode($access_token);
 					$origin_redirect_uri .= '&expires_in='.urlencode($expires_in);

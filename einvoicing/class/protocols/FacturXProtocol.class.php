@@ -37,7 +37,6 @@ require_once DOL_DOCUMENT_ROOT . '/core/lib/files.lib.php';
 //use custom\facturx\Fidry\FileSystem\FS;
 use horstoeko\zugferd\codelists\ZugferdCountryCodes;
 use horstoeko\zugferd\codelists\ZugferdCurrencyCodes;
-use horstoeko\zugferd\codelists\ZugferdElectronicAddressScheme;
 use horstoeko\zugferd\codelists\ZugferdInvoiceType;
 use horstoeko\zugferd\codelists\ZugferdReferenceCodeQualifiers;
 use horstoeko\zugferd\codelists\ZugferdUnitCodes;
@@ -46,12 +45,10 @@ use horstoeko\zugferd\codelists\ZugferdVatTypeCodes;
 use horstoeko\zugferd\ZugferdDocumentBuilder;
 use horstoeko\zugferd\ZugferdProfiles;
 use horstoeko\zugferd\ZugferdDocumentPdfBuilder;
-use horstoeko\zugferd\ZugferdDocumentPdfBuilderAbstract;
 use horstoeko\zugferd\ZugferdDocumentValidator;
 use horstoeko\zugferd\ZugferdDocumentPdfReader;
 use horstoeko\zugferd\ZugferdDocumentPdfReaderExt;
 use horstoeko\zugferd\ZugferdDocumentPdfMerger;
-
 
 require __DIR__ . "/../../vendor/autoload.php";
 
@@ -91,7 +88,6 @@ class FacturXProtocol extends AbstractProtocol
 		$this->db = $db;
 	}
 
-
 	/**
 	 * Generate the XML content for a given invoice according to the Factur-X standard.
 	 * This also make a lot of check
@@ -111,15 +107,169 @@ class FacturXProtocol extends AbstractProtocol
 		// Call page to generate the invoice
 		include dol_buildpath('einvoicing/lib/buildinvoicelines.inc.php');
 		/**
-		 * @var Facture 			$object			The $invoice object used in entry on inc file, but completed.
-		 * @var array<mixed,mixed> 	$invoiceData
-		 * @var array<mixed,mixed> 	$linesData
+		 * From include:
+		 * @var Facture 			$object			The `$invoice` object used in entry on inc file, but completed.
+		 * @var array{
+		 *   documentno: string,
+		 *   documenttypecode: null|string,
+		 *   documentdate: DateTimeInterface,
+		 *   invoiceCurrency: string|list<string>,
+		 *   taxCurrency: null,
+		 *   documentname: null,
+		 *   documentlanguage: string,
+		 *   effectiveSpecifiedPeriod: 'NA',
+		 *   documentDeliveryDate: DateTimeInterface,
+		 *   invoicingPeriodStart: null,
+		 *   invoicingPeriodEnd: null,
+		 *   businessProcessId: string,
+		 *   isTestDocument: bool,
+		 *   documentNotePublic: string,
+		 *   documentNotePMT: string,
+		 *   documentNotePMD: string,
+		 *   documentNoteAAB: string,
+		 *   documentNotes: array,
+		 *   sellername: string,
+		 *   sellerids: string,
+		 *   sellerlineone: string,
+		 *   sellerlinetwo: string,
+		 *   sellerlinethree: string,
+		 *   sellerpostcode: string,
+		 *   sellercity: string,
+		 *   sellercountry: string,
+		 *   sellersubdivision: null,
+		 *   sellercontactpersonname: string,
+		 *   sellercontactdepartmentname: null,
+		 *   sellercontactphoneno: string,
+		 *   sellercontactfaxno: string,
+		 *   sellercontactemailaddr: string,
+		 *   sellerCommunicationUriScheme: string,
+		 *   sellerCommunicationUri: string,
+		 *   sellerGlobalIds: list<array{schemeID: string, value: string}>,
+		 *   sellerTaxRegistrations: list<array{type: string, value: string}>,
+		 *   sellervatnumber: string,
+		 *   sellerLegalOrgId: string,
+		 *   sellerLegalOrgScheme: string,
+		 *   sellerTradingName: string,
+		 *   buyername: string,
+		 *   buyerids: string,
+		 *   buyerlineone: string,
+		 *   buyerlinetwo: string,
+		 *   buyerlinethree: string,
+		 *   buyerpostcode: string,
+		 *   buyercity: string,
+		 *   buyercountry: string,
+		 *   buyersubdivision: null,
+		 *   buyervatnumber: string,
+		 *   buyerGlobalIds: list<array{schemeID: string, value: string}>,
+		 *   buyerLegalOrgId: string,
+		 *   buyerLegalOrgScheme: string,
+		 *   buyerTradingName: string,
+		 *   buyerReference: null|string,
+		 *   buyerCommunicationUriScheme: string,
+		 *   buyerCommunicationUri: string,
+		 *   buyercontactpersonname: null,
+		 *   buyercontactemailaddr: null,
+		 *   buyercontactphoneno: null,
+		 *   grandTotalAmount: float|int,
+		 *   duePayableAmount: float|int,
+		 *   lineTotalAmount: float|int,
+		 *   chargeTotalAmount: float,
+		 *   allowanceTotalAmount: float|int,
+		 *   taxBasisTotalAmount: float|int,
+		 *   taxTotalAmount: float|int,
+		 *   roundingAmount: null,
+		 *   totalPrepaidAmount: float|int,
+		 *   iban_id: int,
+		 *   iban: string,
+		 *   bic: string,
+		 *   accountName: string,
+		 *   accountRef: string,
+		 *   accountLabel: string,
+		 *   paymentDueDate: DateTimeInterface,
+		 *   paymentTermsText: string,
+		 *   headerAllowancesCharges: array,
+		 *   invoiceRefDocs: array|list<array{ref: string|int, date: \DateTimeInterface, type: string}>,
+		 *   orderReference: string,
+		 *   contractReference: null|string,
+		 *   despatchAdviceRef: null,
+		 *   taxBreakdown: array|list<array<string, array>>,
+		 *   _chorus: bool,
+		 *   _depositlines: array|list<array{lineId: int, invoiceRef: string, invoiceDate: DateTimeInterface}>,
+		 *   _globalDiscounts: array|list<array{value: float, reason: string, taxRate: float, categoryVAT: string}>,
+		 *   _customerOrderReferenceList: string[],
+		 *   _project: \Project|null,
+		 *   paymentMeansCode?: int,
+		 *   paymentMeansText?: string,
+		 *   _shipFromContactBill?: array{address: null|string, zip: null|string, town: null|string, country: string},
+		 *   _shipFromContactShip?: array{name: string, address: null|string, zip: null|string, town: null|string, country: string}
+		 * }	$invoiceData
+		 * @var array<int, array{
+		 *   lineid: int,
+		 *   linestatuscode: 'NA',
+		 *   linestatusreasoncode: 'NA',
+		 *   lineNote: null,
+		 *   prodname: string,
+		 *   proddesc: string,
+		 *   prodsellerid: string,
+		 *   prodbuyerid: null|string,
+		 *   prodglobalidtype: null|string,
+		 *   prodglobalid: null|string,
+		 *   prodmultilangs: array,
+		 *   prodClassificationCode: null|string,
+		 *   prodClassificationScheme: null|string,
+		 *   prodOriginCountry: null|string,
+		 *   netpriceamount: float,
+		 *   netpricebasisquantity: null|float,
+		 *   netpricebasisquantityunitcode: null|string,
+		 *   billedquantity: float,
+		 *   billedquantityunitcode: string,
+		 *   chargeFreeQuantity: null|float,
+		 *   chargeFreeQuantityunitcode: null|string,
+		 *   packageQuantity: null|float,
+		 *   packageQuantityunitcode: null|string,
+		 *   lineTotalAmount: float|string,
+		 *   totalAllowanceChargeAmount: null|float,
+		 *   categoryCode: string,
+		 *   typeCode: 'VAT',
+		 *   rateApplicablePercent: string,
+		 *   tva_tx: float|string,
+		 *   vat_src_code: string,
+		 *   ExemptionReason: string,
+		 *   ExemptionReasonCode: string,
+		 *   calculatedAmount: null|float,
+		 *   lineAllowances: array,
+		 *   lineGrossPriceAllowances: array,
+		 *   lineremisepercent: 'NA'|float,
+		 *   linePeriodStart: ?\DateTimeInterface,
+		 *   linePeriodEnd: ?\DateTimeInterface,
+		 *   additionalRefDocs: array,
+		 *   isDepositLine: bool,
+		 *   depositInvoiceRef: null|string,
+		 *   depositInvoiceDate: ?DateTimeInterface,
+		 *   parentDocumentNo: null|string,
+		 *   is_deposit: int<0,1>,
+		 *   fk_remise: null|int,
+		 *   discountPercent: float,
+		 *   grosspriceamount: null|float,
+		 *   grosspricebasisquantity: null|float,
+		 *   grosspricebasisquantityunitcode: null|string
+		 * }> $linesData
 		 * @var string 				$outputlang		Value of $outputlangs->defaultlang
 		 * @var Account				$account
-		 * @var EInvoicing		$einvoicing
-		 * @var string 				$schemdUri		Buyer scheme uri
+		 * @var EInvoicing			$einvoicing
+		 * @var string 				$schemeUri		Buyer scheme uri
 		 * @var string 				$uri			Buyer uri
 		 */
+		'
+		@phan-var-force Facture 			$object			The $invoice object used in entry on inc file, but completed.
+		@phan-var-force array{documentno:string,documenttypecode:null|string,documentdate:DateTimeInterface,invoiceCurrency:string|array<string>,taxCurrency:null,documentname:null,documentlanguage:string,effectiveSpecifiedPeriod:\'NA\',documentDeliveryDate:DateTimeInterface,invoicingPeriodStart:null,invoicingPeriodEnd:null,businessProcessId:string,isTestDocument:bool,documentNotePublic:string,documentNotePMT:string,documentNotePMD:string,documentNoteAAB:string,documentNotes:array,sellername:string,sellerids:string,sellerlineone:string,sellerlinetwo:string,sellerlinethree:string,sellerpostcode:string,sellercity:string,sellercountry:string,sellersubdivision:null,sellercontactpersonname:string,sellercontactdepartmentname:null,sellercontactphoneno:string,sellercontactfaxno:string,sellercontactemailaddr:string,sellerCommunicationUriScheme:string,sellerCommunicationUri:string,sellerGlobalIds:array<array{schemeID:string,value:string}>,sellerTaxRegistrations:array<array{type:string,value:string}>,sellervatnumber:string,sellerLegalOrgId:string,sellerLegalOrgScheme:string,sellerTradingName:string,buyername:string,buyerids:string,buyerlineone:string,buyerlinetwo:string,buyerlinethree:string,buyerpostcode:string,buyercity:string,buyercountry:string,buyersubdivision:null,buyervatnumber:string,buyerGlobalIds:array<array{schemeID:string,value:string}>,buyerLegalOrgId:string,buyerLegalOrgScheme:string,buyerTradingName:string,buyerReference:null|string,buyerCommunicationUriScheme:string,buyerCommunicationUri:string,buyercontactpersonname:null,buyercontactemailaddr:null,buyercontactphoneno:null,grandTotalAmount:float|int,duePayableAmount:float|int,lineTotalAmount:float|int,chargeTotalAmount:float,allowanceTotalAmount:float|int,taxBasisTotalAmount:float|int,taxTotalAmount:float|int,roundingAmount:null,totalPrepaidAmount:float|int,iban_id:int,iban:string,bic:string,accountName:string,accountRef:string,accountLabel:string,paymentDueDate:DateTimeInterface,paymentTermsText:string,headerAllowancesCharges:array,invoiceRefDocs:array|array<array{ref:string|int,date:DateTimeInterface,type:string}>,orderReference:string,contractReference:null|string,despatchAdviceRef:null,taxBreakdown:array|array<array<string,array>>,_chorus:bool,_depositlines:array|array<array{lineId:int,invoiceRef:string,invoiceDate:DateTimeInterface}>,_globalDiscounts:array|array<array{value:float,reason:string,taxRate:float,categoryVAT:string}>,_customerOrderReferenceList:string[],_project:Project|null,paymentMeansCode?:int,paymentMeansText?:string,_shipFromContactBill?:array{address:null|string,zip:null|string,town:null|string,country:string},_shipFromContactShip?:array{name:string,address:null|string,zip:null|string,town:null|string,country:string}} $invoiceData
+		@phan-var-force array<int,array{lineid:int,linestatuscode:\'NA\',linestatusreasoncode:\'NA\',lineNote:null,prodname:string,proddesc:string,prodsellerid:string,prodbuyerid:null|string,prodglobalidtype:null|string,prodglobalid:null|string,prodmultilangs:array,prodClassificationCode:null|string,prodClassificationScheme:null|string,prodOriginCountry:null|string,netpriceamount:float,netpricebasisquantity:null|float,netpricebasisquantityunitcode:null|string,billedquantity:float,billedquantityunitcode:string,chargeFreeQuantity:null|float,chargeFreeQuantityunitcode:null|string,packageQuantity:null|float,packageQuantityunitcode:null|string,lineTotalAmount:float|string,totalAllowanceChargeAmount:null|float,categoryCode:string,typeCode:\'VAT\',rateApplicablePercent:string,tva_tx:float|string,vat_src_code:string,ExemptionReason:string,ExemptionReasonCode:string,calculatedAmount:null|float,lineAllowances:array,lineGrossPriceAllowances:array,lineremisepercent:\'NA\'|float,linePeriodStart:?DateTimeInterface,linePeriodEnd:?DateTimeInterface,additionalRefDocs:array,isDepositLine:bool,depositInvoiceRef:null|string,depositInvoiceDate:?DateTimeInterface,parentDocumentNo:null|string,is_deposit:int<0,1>,fk_remise:null|int,discountPercent:float,grosspriceamount:null|float,grosspricebasisquantity:null|float,grosspricebasisquantityunitcode:null|string}> $linesData
+		@phan-var-force string 				$outputlang		Value of $outputlangs->defaultlang
+		@phan-var-force Account				$account
+		@phan-var-force EInvoicing			$einvoicing
+		@phan-var-force string 				$schemeUri		Buyer scheme uri
+		@phan-var-force string 				$uri			Buyer uri
+		';
 
 		if (!getDolGlobalInt('EINVOICING_USE_EXTERNAL_FACTURX_BUILDER')) {
 			// =====================================================================
@@ -129,6 +279,7 @@ class FacturXProtocol extends AbstractProtocol
 			dol_include_once('einvoicing/class/protocols/ProtocolManager.class.php');
 			$ProtocolManager = new ProtocolManager($db);
 			$CII = $ProtocolManager->getProtocol('CII');
+			'@phan-var-force CIIProtocol $CII';
 
 			// Generate the XML file
 			$filename = dol_sanitizeFileName($invoice->ref);
@@ -139,6 +290,10 @@ class FacturXProtocol extends AbstractProtocol
 			dol_delete_file($xmlfile);
 
 			$xmlcontent = $CII->buildXML($invoiceData, $linesData, 'EXTENDED', $outputlangs);
+
+			// Local EN 16931 business rules safety net (warnings, or abort in strict mode)
+			$this->checkBusinessRules($xmlcontent);
+
 			file_put_contents($xmlfile, $xmlcontent);
 
 			dolChmod($xmlfile);
@@ -158,6 +313,7 @@ class FacturXProtocol extends AbstractProtocol
 				case 'EN16931':
 					$used_profile = ZugferdProfiles::PROFILE_EXTENDED;
 					$facturxpdf = ZugferdDocumentBuilder::createNew($used_profile);
+					// no break
 				default:
 					$used_profile = ZugferdProfiles::PROFILE_EXTENDED;
 					$facturxpdf = ZugferdDocumentBuilder::createNew($used_profile);
@@ -242,7 +398,7 @@ class FacturXProtocol extends AbstractProtocol
 
 			// Add data of project if invoice is into a project
 			if ($invoiceData['_project'] instanceof Project) {
-				$facturxpdf->setDocumentProcuringProject($invoiceData['_project']->ref, $invoiceData['_project']->title);
+				$facturxpdf->setDocumentProcuringProject((string) $invoiceData['_project']->ref, $invoiceData['_project']->title);
 			}
 
 			// Add additional referenced documents (Order references) - Disabled for Chorus
@@ -302,7 +458,7 @@ class FacturXProtocol extends AbstractProtocol
 			// --- Process Invoice Lines ---
 			foreach ($linesData as $numligne => $lineData) {
 				$facturxpdf
-					->addNewPosition($lineData['lineid'])
+					->addNewPosition((string) $lineData['lineid'])
 					->setDocumentPositionProductDetails($lineData['prodname'], $lineData['proddesc'], $lineData['prodsellerid'])
 					->setDocumentPositionGrossPrice($lineData['grosspriceamount'])
 					->setDocumentPositionNetPrice($lineData['netpriceamount'])
@@ -327,9 +483,9 @@ class FacturXProtocol extends AbstractProtocol
 
 				// VAT information (Line Tax)
 				if ($lineData['rateApplicablePercent'] > 0) {
-					$facturxpdf->addDocumentPositionTax($lineData['categoryCode'], 'VAT', $lineData['rateApplicablePercent']);
+					$facturxpdf->addDocumentPositionTax($lineData['categoryCode'], 'VAT', (empty($lineData['rateApplicablePercent']) ? null : (float) $lineData['rateApplicablePercent']));
 				} else {
-					$facturxpdf->addDocumentPositionTax($lineData['categoryCode'], 'VAT', '0.00');
+					$facturxpdf->addDocumentPositionTax($lineData['categoryCode'], 'VAT', 0.00);
 				}
 
 				// Discount percentage on a line
@@ -366,7 +522,7 @@ class FacturXProtocol extends AbstractProtocol
 					$invoiceData['paymentDueDate']
 				)
 				->addDocumentPaymentMean(
-					$invoiceData['paymentMeansCode'],
+					(string) $invoiceData['paymentMeansCode'],
 					$invoiceData['paymentMeansText'],
 					null,
 					null,
@@ -416,6 +572,10 @@ class FacturXProtocol extends AbstractProtocol
 				file_put_contents($xmlfile, $patchedXml);
 			}
 
+			// Local EN 16931 business rules safety net on the final XML (warnings, or abort in strict mode),
+			// same as the native builder branch above, so the external builder is covered too.
+			$this->checkBusinessRules(file_get_contents($xmlfile));
+
 			dolChmod($xmlfile);
 
 			return $xmlfile;
@@ -430,9 +590,10 @@ class FacturXProtocol extends AbstractProtocol
 	 *
 	 * @param 	int|Object 	$invoice_id    	Invoice ID or Invoice Object to be processed.
 	 * @param	?Translate	$outputlangs	Output language
+	 * @param	string		$sourceFilePath	Full path of the source document produced by the doc generator (PDF, or ODT/ODS whose PDF rendition is reused). Empty = resolve from the output directory.
 	 * @return 	-1|string       			-1 if ko, path if ok.
 	 */
-	public function generateInvoice($invoice_id, $outputlangs = null)
+	public function generateInvoice($invoice_id, $outputlangs = null, $sourceFilePath = '')
 	{
 		// Global variables declaration (typical for Dolibarr environment)
 		global $langs, $db;
@@ -485,10 +646,53 @@ class FacturXProtocol extends AbstractProtocol
 
 		$filename = dol_sanitizeFileName($invoice->ref);
 		$filedir = getMultidirOutputCompat($invoice, '', 1);		// Example '/mydolibarr/documents/facture/FAYYMM-XXXX'
-		$orig_pdf = $filedir . '/' . $filename . '.pdf';
 
-		// Si le PDF source n'existe plus (supprimé manuellement), on le regénère avant d'embarquer le XML.
+		// Resolve the source PDF into which the Factur-X XML will be embedded.
+		// Priority:
+		//   1. $sourceFilePath provided by the generation hook (afterPDFCreation / afterODTCreation).
+		//      ODT/ODS models hand over the .odt path; the PDF rendition (MAIN_ODT_AS_PDF) shares the basename.
+		//   2. the most recent <ref>*.pdf already present in the output dir (manual generation, ODT output
+		//      like <ref>_Template.pdf for which last_main_doc is not maintained), excluding our own output.
+		//   3. legacy <ref>.pdf, regenerated with the default PDF model if missing.
+		$orig_pdf = '';
+		$fromodt = false;
+		if (!empty($sourceFilePath)) {
+			if (preg_match('/\.(odt|ods)$/i', $sourceFilePath)) {
+				$fromodt = true;
+				$orig_pdf = preg_replace('/\.(odt|ods)$/i', '.pdf', $sourceFilePath);
+			} else {
+				$orig_pdf = $sourceFilePath;
+			}
+		} else {
+			$candidates = dol_dir_list($filedir, 'files', 0, '', '', 'date', SORT_DESC);
+			foreach ($candidates as $cand) {
+				if (!preg_match('/\.pdf$/i', $cand['name'])) {
+					continue;
+				}
+				if (preg_match('/_facturx\.pdf$/i', $cand['name'])) {		// skip our own Factur-X output
+					continue;
+				}
+				if (strpos($cand['name'], $filename) !== 0) {				// must belong to this invoice ref
+					continue;
+				}
+				$orig_pdf = $cand['fullname'];								// list is sorted by date desc: newest first
+				break;
+			}
+		}
+		if (empty($orig_pdf)) {
+			$orig_pdf = $filedir . '/' . $filename . '.pdf';				// legacy default
+		}
+
+		// If the source PDF is missing, decide whether we can recover.
 		if (!file_exists($orig_pdf)) {
+			if ($fromodt && !getDolGlobalString('MAIN_ODT_AS_PDF')) {
+				// ODT invoice template without a PDF rendition: there is no PDF carrier for Factur-X.
+				dol_syslog(get_class($this) . "::generateInvoice ODT template without MAIN_ODT_AS_PDF, no PDF carrier for Factur-X, invoice id=" . $invoice_id, LOG_ERR);
+				$this->error = $langs->trans("ErrorEInvoiceRequiresPdfEnableMainOdtAsPdf");
+				$this->errors[] = $this->error;
+				return -1;
+			}
+			// Source PDF deleted or never generated: regenerate it with the default PDF model before embedding.
 			$modelname = getDolGlobalString('FACTURE_ADDON_PDF') ?: 'crabe';
 			$resultpdf = $invoice->generateDocument($modelname, $langs);
 			if ($resultpdf < 0) {
@@ -497,6 +701,7 @@ class FacturXProtocol extends AbstractProtocol
 				$this->errors[] = $this->error;
 				return -1;
 			}
+			$orig_pdf = $filedir . '/' . $filename . '.pdf';				// generateDocument writes <ref>.pdf
 		}
 
 		// Make a copy of the original PDF file
@@ -520,7 +725,7 @@ class FacturXProtocol extends AbstractProtocol
 		}
 
 		// Check if the source PDF is valid, log error and exit if not.
-		if ($precheck == false) {
+		if (!$precheck) {
 			dol_syslog(get_class($this) . "::executeHooks orig pdf file does not exists, can't create facturX");
 			$this->error = 'Orig pdf file does not exists, can t create facturX';
 			$this->errors[] = $this->error;
@@ -538,7 +743,7 @@ class FacturXProtocol extends AbstractProtocol
 			// Generate the PDF including the XML using the TCPDF library.
 			// Bugged version that include the factur-x.xml file twice in the PDF. Only Acrobat Reader show there is 2 files, other PDF reader works correctly showing one file.
 			// But it works with Esalink and is the only solution when Dolibarr < 24.0 because such version have a class FPDF provided by default in Dolibarr
-			// that is in conflict with the class FPDF provided bu the module einvoicing and the library horstoeko/zugferd.
+			// that is in conflict with the class FPDF provided by the module einvoicing and the library horstoeko/zugferd.
 			$pdf = pdf_getInstance();
 			$pagecount = $pdf->setSourceFile($pathfacturxpdf);
 
@@ -648,6 +853,9 @@ class FacturXProtocol extends AbstractProtocol
 			// Set status to e-einvoice generated
 			$einvoicing->setEInvoiceStatus($invoice, $einvoicing::STATUS_GENERATED, 'Invoice status set to Generated by generateInvoice()');
 		}
+
+		// Warn if the generated file exceeds the configured size limit
+		$this->checkFileSizeLimit($pathfacturxpdf);
 
 		return $pathfacturxpdf;		// Name of generated Einvoice
 	}
@@ -781,7 +989,7 @@ class FacturXProtocol extends AbstractProtocol
 		$documentBuilder->setDocumentPositionNetPrice(9.9000);
 		$documentBuilder->setDocumentPositionQuantity(20, ZugferdUnitCodes::REC20_PIECE);
 		$vatrate = 20;
-		if (!$this->checkIfVatRateIsValid($vatrate, $mysoc->country_code)) {
+		if (!$this->checkIfVatRateIsValid((string) $vatrate, $mysoc->country_code)) {
 			throw new Exception('BADVATRATE: The VAT rate ' . $vatrate . ' on line is not a valid string value for country ' . $mysoc->country_code . '.');
 		}
 		$documentBuilder->addDocumentPositionTax(ZugferdVatCategoryCodes::STAN_RATE, ZugferdVatTypeCodes::VALUE_ADDED_TAX, $vatrate);
@@ -792,7 +1000,7 @@ class FacturXProtocol extends AbstractProtocol
 		$documentBuilder->setDocumentPositionNetPrice(5.5000);
 		$documentBuilder->setDocumentPositionQuantity(50, ZugferdUnitCodes::REC20_PIECE);
 		$vatrate = 7;
-		if (!$this->checkIfVatRateIsValid($vatrate, $mysoc->country_code)) {
+		if (!$this->checkIfVatRateIsValid((string) $vatrate, $mysoc->country_code)) {
 			throw new Exception('BADVATRATE: The VAT rate ' . $vatrate . ' on line is not a valid string value for country ' . $mysoc->country_code . '.');
 		}
 		$documentBuilder->addDocumentPositionTax(ZugferdVatCategoryCodes::STAN_RATE, ZugferdVatTypeCodes::VALUE_ADDED_TAX, $vatrate);
@@ -803,7 +1011,7 @@ class FacturXProtocol extends AbstractProtocol
 		$documentBuilder->setDocumentPositionNetPrice(4.0000);
 		$documentBuilder->setDocumentPositionQuantity(100, ZugferdUnitCodes::REC20_PIECE);
 		$vatrate = 7;
-		if (!$this->checkIfVatRateIsValid($vatrate, $mysoc->country_code)) {
+		if (!$this->checkIfVatRateIsValid((string) $vatrate, $mysoc->country_code)) {
 			throw new Exception('BADVATRATE: The VAT rate ' . $vatrate . ' on line is not a valid string value for country ' . $mysoc->country_code . '.');
 		}
 		$documentBuilder->addDocumentPositionTax(ZugferdVatCategoryCodes::STAN_RATE, ZugferdVatTypeCodes::VALUE_ADDED_TAX, $vatrate);
@@ -926,36 +1134,58 @@ class FacturXProtocol extends AbstractProtocol
 	 * @param  string 			$file                       		Source string file (PDF string). We use this file to get data of supplier invoice.
 	 * @param  string|null 		$ReadableViewFile        			Readable view file (PDP Generated readable PDF). We only store it if available.
 	 * @param  string 			$flowId                       		Flow identifier source of the invoice.
-	 * @return array{res:int, message:string, action:string|null}   Returns array with 'res' (1 on success, 0 already exists, -1 on failure) with a 'message' and an optional 'action'.
+	 * @return array{res:int<-1,1>, message:string, action?:string|null}   Returns array with 'res' (1 on success, 0 already exists, -1 on failure) with a 'message' and an optional 'action'.
 	 */
 	public function createSupplierInvoiceFromSource($file, $ReadableViewFile = null, $flowId = '')
+	{
+		global $conf;
+
+		$tempDir = $conf->einvoicing->dir_temp;
+		if (!dol_is_dir($tempDir)) {
+			dol_mkdir($tempDir);
+		}
+
+		// Use a unique per-call working file so two concurrent syncs cannot overwrite each other and
+		// parse the wrong invoice (#226). The fixed facturx.pdf slot is only the downloadable
+		// "last invoice that could not be processed" diagnostic, managed in cleanupIncomingTempFiles().
+		$uid = bin2hex(random_bytes(8));
+		$tempFile = $tempDir . '/in_' . $uid . '.pdf';
+		$tempFileReadableView = $tempDir . '/in_' . $uid . '_readable.pdf';
+
+		$result = ['res' => -1, 'message' => 'Unexpected error while creating supplier invoice'];
+		try {
+			$result = $this->doCreateSupplierInvoiceFromSource($file, $ReadableViewFile, $flowId, $tempFile, $tempFileReadableView);
+		} finally {
+			$failed = !is_array($result) || !isset($result['res']) || $result['res'] < 0;
+			$this->cleanupIncomingTempFiles($tempDir, $tempFile, $tempFileReadableView, 'facturx.pdf', 'facturx_readable.pdf', $failed);
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Build the supplier invoice from a received Factur-X document written to a per-call working file.
+	 * The temp-file lifecycle is owned by createSupplierInvoiceFromSource() (the public wrapper).
+	 *
+	 * @param  string			$file                 Raw Factur-X PDF content
+	 * @param  string|null		$ReadableViewFile     Optional readable view (PDP-generated readable PDF)
+	 * @param  string			$flowId               Source flow identifier
+	 * @param  string			$tempFile             Unique working file for the received PDF
+	 * @param  string			$tempFileReadableView Unique working file for the readable view
+	 * @return array{res:int<-1,1>, message:string, action?:string|null}
+	 */
+	private function doCreateSupplierInvoiceFromSource($file, $ReadableViewFile, $flowId, $tempFile, $tempFileReadableView)
 	{
 		global $conf, $db, $user;
 
 		$einvoicing = new EInvoicing($db);
 		$return_messages = array();
 
-		// Save uploaded file to temporary directory
-		$tempDir = $conf->einvoicing->dir_temp;
-		if (!dol_is_dir($tempDir)) {
-			dol_mkdir($tempDir);
-		}
-
-		// If tmp dir in not empty, clean it
-		$files = scandir($tempDir);
-		foreach ($files as $f) {
-			if ($f != '.' && $f != '..') {
-				dol_delete_file($tempDir . '/' . $f);
-			}
-		}
-
-		$tempFile = $tempDir . '/facturx.pdf';
 		if (file_put_contents($tempFile, $file) === false) {
 			return ['res' => -1, 'message' => 'Failed to save Factur-X file to temporary location'];
 		}
 
 		if ($ReadableViewFile) {
-			$tempFileReadableView = $tempDir . '/facturx_readable.pdf';
 			if (file_put_contents($tempFileReadableView, $ReadableViewFile) === false) {
 				return ['res' => -1, 'message' => 'Failed to save readable view file to temporary location'];
 			}
@@ -978,8 +1208,9 @@ class FacturXProtocol extends AbstractProtocol
 			dol_include_once('einvoicing/class/protocols/ProtocolManager.class.php');
 			$ProtocolManager = new ProtocolManager($db);
 			$CII = $ProtocolManager->getProtocol('CII');
+			'@phan-var-force CIIProtocol $CII';
 
-			$parsedHeader = $CII->parseInvoiceXML($embeddedXml);
+			$parsedHeader = $CII->parseInvoiceHeader($embeddedXml);
 			$parsedLines  = $CII->parseInvoiceLines($embeddedXml);
 		} else {
 			$document->getDocumentInformation($documentno, $documenttypecode, $documentdate, $invoiceCurrency, $taxCurrency, $documentname, $documentlanguage, $effectiveSpecifiedPeriod);
@@ -1101,7 +1332,7 @@ class FacturXProtocol extends AbstractProtocol
 
 					// Get AdditionalReferencedDocument at line level
 					$patcher = new XmlPatcher(null, $embeddedXml);
-					$additionalRefDocs[$lineid] = $patcher->getLineAdditionalReferencedDocuments($lineid);
+					$additionalRefDocs[(string) $lineid] = $patcher->getLineAdditionalReferencedDocuments((string) $lineid);
 
 					// Get tax information for the line
 					//$vatRate = 0;
@@ -1144,7 +1375,7 @@ class FacturXProtocol extends AbstractProtocol
 						// Parent invoice ref
 						'parentDocumentNo' => $parsedHeader['documentno'] ?? null,
 						// Additional referenced documents at line level
-						'additionalRefDocs' => $additionalRefDocs[$lineid] ?? null,
+						'additionalRefDocs' => $additionalRefDocs[(string) $lineid] ?? null,
 					);
 
 
@@ -1214,7 +1445,7 @@ class FacturXProtocol extends AbstractProtocol
 
 		// Set supplier reference
 		$supplierInvoice->socid = $socId;
-		$supplierInvoice->ref_supplier = $parsedHeader['documentno'] ?? null;
+		$supplierInvoice->ref_supplier = $parsedHeader['documentno'] ?? '';
 
 		// Set basic invoice information (type, date)
 		$supplierInvoice->type = $this->_getDolibarrInvoiceType($parsedHeader['documenttypecode'] ?? null);
@@ -1224,15 +1455,40 @@ class FacturXProtocol extends AbstractProtocol
 		// documentdate est déjà formaté en 'Y-m-d' par les parseurs ZugFerd et CII
 		$supplierInvoice->date = !empty($parsedHeader['documentdate']) ? dol_stringtotime($parsedHeader['documentdate']) : null;
 
+		// For credit notes, link to the source invoice via fk_facture_source (BT-25)
+		if ($supplierInvoice->type == FactureFournisseur::TYPE_CREDIT_NOTE && !empty($parsedHeader['invoiceRefDocs']) && is_array($parsedHeader['invoiceRefDocs'])) {
+			$firstRefDoc = reset($parsedHeader['invoiceRefDocs']);
+			$refSourceSupplier = !empty($firstRefDoc['IssuerAssignedID']) ? (string) $firstRefDoc['IssuerAssignedID'] : '';
+			if ($refSourceSupplier !== '') {
+				$sqlSource = "SELECT rowid FROM " . MAIN_DB_PREFIX . "facture_fourn WHERE ref_supplier = '" . $db->escape($refSourceSupplier) . "' LIMIT 1";
+				$resqlSource = $db->query($sqlSource);
+				if ($resqlSource) {
+					$objSource = $db->fetch_object($resqlSource);
+					if ($objSource) {
+						$supplierInvoice->fk_facture_source = (int) $objSource->rowid;
+						dol_syslog(get_class($this) . '::doCreateSupplierInvoiceFromSource Credit note linked to source invoice id=' . $supplierInvoice->fk_facture_source, LOG_DEBUG);
+					} else {
+						dol_syslog(get_class($this) . '::doCreateSupplierInvoiceFromSource Source invoice ref_supplier="' . $refSourceSupplier . '" not found for credit note ' . ($parsedHeader['documentno'] ?? ''), LOG_WARNING);
+					}
+				}
+			}
+		}
 
 		// Set currency
-		$supplierInvoice->multicurrency_code = $parsedHeader['invoiceCurrency'];
+		$supplierInvoice->multicurrency_code = (string) $parsedHeader['invoiceCurrency'];
 
 		// Set import_key
 		$supplierInvoice->import_key = AbstractPDPProvider::$EINVOICING_LAST_IMPORT_KEY;
 
+		// Set payment due date, payment terms and payment method
+		$paymentInfoRes = $this->_applyPaymentInfoToSupplierInvoice($supplierInvoice, $parsedHeader);
+		if (!empty($paymentInfoRes['message'])) {
+			dol_syslog(get_class($this) . '::doCreateSupplierInvoiceFromSource ' . $paymentInfoRes['message'], LOG_DEBUG, 0, '_einvoicing');
+		}
+
 
 		$remise_already_used_line_level_ids = array();
+		$supplierPriceEntries = array(); // Collect product/price data to create supplier prices after invoice creation
 
 		// Add invoice lines
 		foreach ($parsedLines as $parsedLine) {
@@ -1316,13 +1572,13 @@ class FacturXProtocol extends AbstractProtocol
 								$discount->fk_soc = $linkedObject->socid;
 								$discount->socid = $linkedObject->socid;
 								$discount->fk_invoice_supplier_source = $linkedObject->id;
-								foreach ($amount_ht as $tva_tx => $xxx) {
-									$discount->amount_ht = abs((float) $amount_ht[$tva_tx]);
-									$discount->amount_tva = abs((float) $amount_tva[$tva_tx]);
-									$discount->amount_ttc = abs((float) $amount_ttc[$tva_tx]);
-									$discount->multicurrency_amount_ht = abs((float) $multicurrency_amount_ht[$tva_tx]);
-									$discount->multicurrency_amount_tva = abs((float) $multicurrency_amount_tva[$tva_tx]);
-									$discount->multicurrency_amount_ttc = abs((float) $multicurrency_amount_ttc[$tva_tx]);
+								foreach ($amount_ht as $tva_tx => $xxx) {  // @phan-suppress-current-line PhanEmptyForeach
+									$discount->amount_ht = abs((float) $amount_ht[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
+									$discount->amount_tva = abs((float) $amount_tva[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
+									$discount->amount_ttc = abs((float) $amount_ttc[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
+									$discount->multicurrency_amount_ht = abs((float) $multicurrency_amount_ht[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
+									$discount->multicurrency_amount_tva = abs((float) $multicurrency_amount_tva[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
+									$discount->multicurrency_amount_ttc = abs((float) $multicurrency_amount_ttc[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
 
 									// Clean vat code
 									$reg = array();
@@ -1338,7 +1594,6 @@ class FacturXProtocol extends AbstractProtocol
 									$result = $discount->create($user);
 									if ($result < 0) {
 										return ['res' => -1, 'message' => 'Failed to create discount for deposit line: ' . $discount->error];
-										break;
 									}
 									$fk_remise = $result;
 								}
@@ -1378,14 +1633,26 @@ class FacturXProtocol extends AbstractProtocol
 					];
 				}
 				$productId = $res['res'];
+
+				// Collect supplier price data to be created after invoice is saved
+				if ($productId > 0) {
+					$supplierPriceEntries[] = [
+						'productId' => $productId,
+						'unitPrice' => (float) $parsedLine['netpriceamount'],
+						'refFourn'  => (!empty($parsedLine['prodsellerid']) && $parsedLine['prodsellerid'] !== '0000') ? (string) $parsedLine['prodsellerid'] : '',
+						'tvaTx'     => (float) ($parsedLine['rateApplicablePercent'] ?? 0),
+					];
+				}
 			}
 
 
 			// Add line to invoice
 			$line = new SupplierInvoiceLine($db);
-			//$line->desc = $prodname . (!empty($proddesc) ? "\n" . $proddesc : '');
 			if (!empty($productId)) {
 				$line->fk_product = $productId;
+			} elseif (!$is_deposit_line) {
+				// Free line: no product linked, description set from XML data
+				$line->desc = trim($parsedLine['prodname'] ?? '') . (!empty($parsedLine['proddesc']) ? "\n" . trim($parsedLine['proddesc']) : '');
 			}
 			if ($is_deposit_line && !empty($fk_remise)) {
 				$line->fk_remise_except = $fk_remise;
@@ -1395,10 +1662,10 @@ class FacturXProtocol extends AbstractProtocol
 
 				$remise_already_used_line_level_ids[] = $fk_remise;
 			}
-			$line->qty = $parsedLine['billedquantity'];
-			$line->subprice = $parsedLine['netpriceamount'];
-			$line->tva_tx = $parsedLine['rateApplicablePercent'];
-			$line->total_ht = $parsedLine['lineTotalAmount'];
+			$line->qty = (float) $parsedLine['billedquantity'];
+			$line->subprice = (float) $parsedLine['netpriceamount'];
+			$line->tva_tx = (float) $parsedLine['rateApplicablePercent'];
+			$line->total_ht = (float) $parsedLine['lineTotalAmount'];
 			$line->total_tva = $parsedLine['calculatedAmount'] ?? 0;
 			$line->total_ttc = $parsedLine['lineTotalAmount'] + ($parsedLine['calculatedAmount'] ?? 0);
 
@@ -1423,6 +1690,13 @@ class FacturXProtocol extends AbstractProtocol
 		if ($supplierInvoiceId < 0) {
 			return ['res' => -1, 'message' => 'Invoice creation error: ' . $supplierInvoice->error];
 		} else {
+			// Link the invoice to its purchase order (commande fournisseur) when the order reference
+			// (BT-13) matches a single order for the same supplier. Non-blocking. See issue #303.
+			$orderLinkMessage = $this->_linkSupplierInvoiceToPurchaseOrder($supplierInvoice, $socId, $parsedHeader['orderReference'] ?? '');
+			if ($orderLinkMessage !== '') {
+				$return_messages[] = $orderLinkMessage;
+			}
+
 			$create_deposit_line = 0;
 			$fk_remise_for_deposit = 0;
 			// --------------------------------------------------
@@ -1457,6 +1731,14 @@ class FacturXProtocol extends AbstractProtocol
 							$result = $discountcheck->fetch(0, 0, $linkedObject->id);
 							if ($result <= 0) {
 								// Loop on each vat rate
+								'
+								@phan-var-force array<string,float> $amount_ht
+								@phan-var-force array<string,float> $amount_tva
+								@phan-var-force array<string,float> $amount_ttc
+								@phan-var-force array<string,float> $multicurrency_amount_ht
+								@phan-var-force array<string,float> $multicurrency_amount_tva
+								@phan-var-force array<string,float> $multicurrency_amount_ttc
+								';
 								$amount_ht = $amount_tva = $amount_ttc = array();
 								$multicurrency_amount_ht = $multicurrency_amount_tva = $multicurrency_amount_ttc = array();
 								$i = 0;
@@ -1480,13 +1762,13 @@ class FacturXProtocol extends AbstractProtocol
 								$discount->fk_soc = $linkedObject->socid;
 								$discount->socid = $linkedObject->socid;
 								$discount->fk_invoice_supplier_source = $linkedObject->id;
-								foreach ($amount_ht as $tva_tx => $xxx) {
-									$discount->amount_ht = abs((float) $amount_ht[$tva_tx]);
-									$discount->amount_tva = abs((float) $amount_tva[$tva_tx]);
-									$discount->amount_ttc = abs((float) $amount_ttc[$tva_tx]);
-									$discount->multicurrency_amount_ht = abs((float) $multicurrency_amount_ht[$tva_tx]);
-									$discount->multicurrency_amount_tva = abs((float) $multicurrency_amount_tva[$tva_tx]);
-									$discount->multicurrency_amount_ttc = abs((float) $multicurrency_amount_ttc[$tva_tx]);
+								foreach ($amount_ht as $tva_tx => $xxx) {  // @phan-suppress-current-line PhanEmptyForeach
+									$discount->amount_ht = abs((float) $amount_ht[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
+									$discount->amount_tva = abs((float) $amount_tva[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
+									$discount->amount_ttc = abs((float) $amount_ttc[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
+									$discount->multicurrency_amount_ht = abs((float) $multicurrency_amount_ht[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
+									$discount->multicurrency_amount_tva = abs((float) $multicurrency_amount_tva[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
+									$discount->multicurrency_amount_ttc = abs((float) $multicurrency_amount_ttc[$tva_tx]);  // @phan-suppress-current-line PhanTypeInvalidDimOffset
 
 									// Clean vat code
 									$reg = array();
@@ -1502,7 +1784,6 @@ class FacturXProtocol extends AbstractProtocol
 									$result = $discount->create($user);
 									if ($result < 0) {
 										return ['res' => -1, 'message' => 'Failed to create discount for deposit line: ' . $discount->error];
-										break;
 									}
 									$fk_remise_for_deposit = $result;
 								}
@@ -1541,7 +1822,29 @@ class FacturXProtocol extends AbstractProtocol
 				$supplier->update($supplier->id, $user);
 			}
 
-			// TODO : Add supplier price for products (all lines of the invoice)
+			// Create or update supplier prices for imported products
+			if (!empty($supplierPriceEntries)) {
+				require_once DOL_DOCUMENT_ROOT . '/fourn/class/fournisseur.product.class.php';
+				foreach ($supplierPriceEntries as $entry) {
+					$productFourn = new ProductFournisseur($db);
+					$productFourn->id = $entry['productId'];
+					$result = $productFourn->update_buyprice(
+						1,                    // qty min
+						$entry['unitPrice'],  // prix unitaire HT
+						$user,
+						'HT',
+						$supplier,
+						0,                    // availability
+						$entry['refFourn'],   // ref fournisseur
+						$entry['tvaTx']
+					);
+					if ($result < 0) {
+						dol_syslog(__METHOD__ . ' Failed to create supplier price for product id=' . $entry['productId'] . ': ' . $productFourn->error, LOG_WARNING);
+					} else {
+						dol_syslog(__METHOD__ . ' Supplier price created/updated for product id=' . $entry['productId'], LOG_DEBUG);
+					}
+				}
+			}
 
 			// Set import_key
 			$sql = 'UPDATE ' . MAIN_DB_PREFIX . "facture_fourn SET import_key = '" . $db->escape($supplierInvoice->import_key) . "'";
@@ -1584,7 +1887,7 @@ class FacturXProtocol extends AbstractProtocol
 			}
 
 			// TODO : Save receivedFile in supplier invoice attachments
-			return ['res' => $supplierInvoiceId, 'message' => implode("\n", $return_messages)];
+			return ['res' => $supplierInvoiceId, 'message' => implode("\n", $return_messages), 'xml_data' => $embeddedXml];
 		}
 	}
 
@@ -1592,8 +1895,8 @@ class FacturXProtocol extends AbstractProtocol
 	/**
 	 * Determines the delivery dates and the corresponding order numbers within two arrays
 	 *
-	 * @param 	array   $customerOrderReferenceList  	array to store the corresponding order ids as strings
-	 * @param 	array   $deliveryDateList            	array to store the corresponding delivery dates as string in format YYYY-MM-DD
+	 * @param 	string[]   $customerOrderReferenceList  	array to store the corresponding order ids as strings
+	 * @param 	string[]   $deliveryDateList            	array to store the corresponding delivery dates as string in format YYYY-MM-DD
 	 * @param 	Facture $object 						invoice object
 	 * @return	void
 	 */
@@ -1662,18 +1965,23 @@ class FacturXProtocol extends AbstractProtocol
 	/**
 	 * Map document type code to Dolibarr invoice type
 	 *
-	 * @param string $documenttypecode Document type code
-	 * @return int|string Dolibarr invoice type or '-1' if unknown
+	 * @param ?string $documenttypecode Document type code
+	 * @return int|'-1' Dolibarr invoice type or '-1' if unknown
 	 */
 	private function _getDolibarrInvoiceType($documenttypecode)
 	{
+		if ($documenttypecode === null) {
+			return '-1';
+		}
+
 		/**
+		 * @var array<string,int>
 		 * Codes UNTDID 1001 utilisés par EN16931 pour le type de facture (InvoiceTypeCode BT-3).
 		 * 325 – Facture pro-forma (a ignorer, n'est pas une facture mais une commande)
 		 * 211 – Demande de paiement intermédiaire (une facture de situation?)
 		 * 386 – Facture d’acompte
 		 * 381 – Avoir / Note de crédit sur facture standard
-		 * 384 – Facture corrective / remplacement
+		 * 384 – Facture corrective / replacement
 		 * 380 – Facture standard
 		 * 503 - Avoir / Note de crédit sur une facture d'acompte
 		 *
@@ -1692,7 +2000,7 @@ class FacturXProtocol extends AbstractProtocol
 		 */
 
 		$map = [
-			ZugferdInvoiceType::PROFORMAINVOICE                 => CommonInvoice::TYPE_PROFORMA,
+			ZugferdInvoiceType::PROFORMAINVOICE                 => CommonInvoice::TYPE_PROFORMA,  // @phan-suppress-current-line PhanDeprecatedClassConstant
 			ZugferdInvoiceType::INTERIMAPPLICATIONFORPAYMENT    => CommonInvoice::TYPE_SITUATION,
 
 			ZugferdInvoiceType::INVOICE                         => CommonInvoice::TYPE_STANDARD,
@@ -1703,12 +2011,12 @@ class FacturXProtocol extends AbstractProtocol
 		];
 
 
-		if (!isset($map[$documenttypecode])) {
+		if (isset($map[$documenttypecode])) {
 			dol_syslog(get_class($this) . '::_getDolibarrInvoiceType Unknown document type code: ' . $documenttypecode, LOG_WARNING);
 			return '-1';
 		}
 
-		return $map[$documenttypecode];
+		return $map[$documenttypecode];  // @phan-suppress-current-line PhanTypeMismatchDimFetch
 	}
 
 
@@ -1759,7 +2067,7 @@ class FacturXProtocol extends AbstractProtocol
 
 		// Register file in database index
 		$res = addFileIntoDatabaseIndex(
-			$dest_path,
+			$upload_dir,
 			$filename,
 			$filename,
 			'generated',
@@ -1781,5 +2089,16 @@ class FacturXProtocol extends AbstractProtocol
 		}
 
 		return array('res' => 1, 'message' => 'Attachment saved successfully ' . $dest_path);
+	}
+
+	/**
+	 * Remove attachment nodes to get a smaller XML
+	 * @param string $xmlData The XML data to process
+	 * @return string Cleaned XML
+	 */
+	public static function removeAttachmentFromXml(string $xmlData): string
+	{
+		// FacturX uses CII format for its embedded XML.
+		return CIIProtocol::removeAttachmentFromXml($xmlData);
 	}
 }
